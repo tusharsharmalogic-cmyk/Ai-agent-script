@@ -227,46 +227,27 @@
         }
 
         try {
-            // 1) Editor ko focus karo (pehle click, phir focus)
+            // 1) Editor focus + click
             editor.click();
             editor.focus();
 
-            // 2) Editor ke andar hi select karo — poori page nahi
+            // 2) Editor ke content ko select karo (scoped — poora page nahi)
             let range = document.createRange();
             range.selectNodeContents(editor);
             let sel = window.getSelection();
             sel.removeAllRanges();
             sel.addRange(range);
 
-            // 3) Clear karo (delete selection)
+            // 3) Selected content delete karo
             document.execCommand('delete', false, null);
 
-            // 4) Content daalo — pehle paste event, phir execCommand fallback
-            let inserted = false;
-            try {
-                let dt = new DataTransfer();
-                dt.setData('text/plain', output);
-                let pasteEvt = new ClipboardEvent('paste', {
-                    bubbles: true,
-                    cancelable: true,
-                    clipboardData: dt
-                });
-                editor.dispatchEvent(pasteEvt);
-                inserted = true;
-            } catch (err) {
-                inserted = false;
-            }
+            // 4) Naya text insert karo
+            document.execCommand('insertText', false, output);
 
-            if (!inserted) {
-                // Fallback: execCommand insertText (deprecated but broad support)
-                document.execCommand('insertText', false, output);
-            }
-
-            // 5) Input event bhejo — ProseMirror state sync
+            // 5) ProseMirror state sync
             editor.dispatchEvent(new InputEvent('input', {bubbles: true, cancelable: true}));
         } catch (err) {
             console.log('❌ Claude insert error:', err);
-            sendToAI('❌ Claude mein text insert nahi hua: ' + err.message);
             isRunning = false;
             return;
         }
@@ -451,10 +432,47 @@
     // ── AI Message Detection ──────────────────────────────────────────────────
     function getLastAIMessage() {
         if (IS_CLAUDE) {
-            // Pehle wali working logic — .group.relative.relative
-            let msgs = document.querySelectorAll('.group.relative.relative');
-            if (!msgs.length) return null;
-            return msgs[msgs.length - 1];
+            // Strategy 1: known stable selectors — Claude UI versions
+            const SELECTORS = [
+                '[data-testid="assistant-message"]',
+                '.font-claude-message',
+                '.group.relative.relative',
+                '.prose',
+            ];
+            for (let sel of SELECTORS) {
+                let msgs = document.querySelectorAll(sel);
+                if (msgs.length) return msgs[msgs.length - 1];
+            }
+
+            // Strategy 2: last <pre> block se upar jaao —
+            // sirf tab use karo jab koi selector kaam na kare
+            let allPres = document.querySelectorAll('pre');
+            if (allPres.length) {
+                let lastPre = allPres[allPres.length - 1];
+                // Max 12 levels upar jaao — pehla aisa div jo
+                // sirf pre blocks wala content rakhe (min-height check)
+                let el = lastPre.parentElement;
+                let depth = 0;
+                while (el && el.tagName !== 'BODY' && depth < 12) {
+                    // Agar yeh div scroll container ya turn wrapper hai
+                    let style = window.getComputedStyle(el);
+                    if (el.tagName === 'DIV' &&
+                        el.querySelectorAll('pre').length >= 1 &&
+                        style.display !== 'inline') {
+                        // Check: iska parent me siblings hain (AI vs user turn structure)
+                        let parent = el.parentElement;
+                        if (parent && parent.children.length >= 2) {
+                            return el;
+                        }
+                    }
+                    el = el.parentElement;
+                    depth++;
+                }
+                // Fallback — lastPre khud return karo
+                return lastPre;
+            }
+
+            return null;
         } else {
             // DeepSeek
             let msgs = document.querySelectorAll('.ds-markdown.ds-assistant-message-main-content');
@@ -467,25 +485,31 @@
         let pres = el.querySelectorAll('pre');
         // BUG 2 fix: newest <pre> block pehle — streaming ke dauraan latest action prefer
         for (let i = pres.length - 1; i >= 0; i--) {
-            let text = pres[i].innerText.trim();
+            // FIX: Claude <pre><code>...</code></pre> render karta hai
+            // code element ka textContent zyada clean hota hai innerText se
+            let codeEl = pres[i].querySelector('code');
+            let text = (codeEl ? codeEl.textContent : pres[i].innerText).trim();
             if (!text) continue;
 
-            // EDIT_FILE (c: \n>>>\s*$ anchor — content ke andar wala >>> match na tode)
+            // Normalize: Windows CRLF → LF (copy-paste artifacts)
+            text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+            // EDIT_FILE — lenient: >>> ke baad optional whitespace/newlines allow
             let editMatch = text.match(
-                /EDIT_FILE:\s*(.+?)\nOLD_STR\n<<<\n([\s\S]*?)\n>>>\nNEW_STR\n<<<\n([\s\S]*?)\n>>>\s*$/
+                /EDIT_FILE:\s*(.+?)\nOLD_STR\s*\n<<<\n([\s\S]*?)\n>>>\s*\nNEW_STR\s*\n<<<\n([\s\S]*?)\n>>>\s*$/
             );
             if (editMatch) {
                 return {type: 'edit', path: editMatch[1].trim(), oldStr: editMatch[2], newStr: editMatch[3], fp: text};
             }
 
-            // WRITE_FILE (c: \n>>>\s*$ anchor)
+            // WRITE_FILE — lenient
             let writeMatch = text.match(/WRITE_FILE:\s*(.+?)\n<<<\n([\s\S]*?)\n>>>\s*$/);
             if (writeMatch) {
                 return {type: 'write', path: writeMatch[1].trim(), content: writeMatch[2], fp: text};
             }
 
             // Multi-line command
-            let multiMatch = text.match(/RUN_CMD_START\n([\s\S]*?)\nRUN_CMD_END/);
+            let multiMatch = text.match(/RUN_CMD_START\s*\n([\s\S]*?)\nRUN_CMD_END/);
             if (multiMatch) return {type: 'cmd', cmd: multiMatch[1].trim(), fp: text};
 
             // Single-line command
@@ -498,24 +522,37 @@
     // ── Main Loop ─────────────────────────────────────────────────────────────
     setInterval(() => {
         if (isRunning) return;
+
+        // Saare pre blocks check karo — last wala jo action deta ho
+        let allPres = document.querySelectorAll('pre');
+        if (!allPres.length) return;
+
+        // Streaming settle check — last pre ka text 2 cycles stable hona chahiye
+        let lastPre = allPres[allPres.length - 1];
+        let codeEl  = lastPre.querySelector('code');
+        let preText = (codeEl ? codeEl.textContent : lastPre.innerText).trim();
+
+        if (preText !== lastTextSeen) {
+            lastTextSeen = preText;
+            return; // abhi stream chal rahi hai — wait karo
+        }
+
+        // Already processed?
+        if (preText === lastProcessed) return;
+
+        // Container element nikalo
         let el = getLastAIMessage();
         if (!el) return;
-        let text = el.innerText;
-
-        // BUG 2 fix: streaming settle — 2 baar same text mile tabhi process karo
-        if (text !== lastTextSeen) {
-            lastTextSeen = text;
-            return;
-        }
-        if (text === lastProcessed) return;
 
         let action = extractAction(el);
         if (!action) return;
 
-        // BUG 2 fix: fingerprint (extracted <pre> content) track karo — repeated execution rok
+        // Fingerprint check — same action dobara execute na ho
         if (action.fp === lastProcessed) return;
 
         lastProcessed = action.fp;
+        console.log(`🚀 Action: ${action.type}`, action);
+
         if (action.type === 'cmd')   runCommand(action.cmd);
         if (action.type === 'edit')  editFile(action.path, action.oldStr, action.newStr);
         if (action.type === 'write') writeFile(action.path, action.content);
