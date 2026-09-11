@@ -15,8 +15,9 @@
     const IS_CLAUDE   = location.hostname === 'claude.ai';
     const IS_DEEPSEEK = location.hostname === 'chat.deepseek.com';
 
-    let lastProcessed = '';
+    let processedFps  = new Set();  // FIX #3: history of executed fingerprints
     let lastTextSeen  = '';
+    let stableCount   = 0;          // FIX #6: 2-cycle stable check
     let isRunning     = false;
     let pollInterval  = null;
     let inputPending  = false;
@@ -433,11 +434,11 @@
     function getLastAIMessage() {
         if (IS_CLAUDE) {
             // Strategy 1: known stable selectors — Claude UI versions
+            // FIX #4: '.prose' hataya — wo user message ke <pre> ke andar bhi match karta hai
             const SELECTORS = [
                 '[data-testid="assistant-message"]',
                 '.font-claude-message',
                 '.group.relative.relative',
-                '.prose',
             ];
             for (let sel of SELECTORS) {
                 let msgs = document.querySelectorAll(sel);
@@ -446,20 +447,17 @@
 
             // Strategy 2: last <pre> block se upar jaao —
             // sirf tab use karo jab koi selector kaam na kare
+            // FIX #5: container me SIRF 1 pre hona chahiye — multi-turn wrapper reject karo
             let allPres = document.querySelectorAll('pre');
             if (allPres.length) {
                 let lastPre = allPres[allPres.length - 1];
-                // Max 12 levels upar jaao — pehla aisa div jo
-                // sirf pre blocks wala content rakhe (min-height check)
                 let el = lastPre.parentElement;
                 let depth = 0;
                 while (el && el.tagName !== 'BODY' && depth < 12) {
-                    // Agar yeh div scroll container ya turn wrapper hai
                     let style = window.getComputedStyle(el);
                     if (el.tagName === 'DIV' &&
-                        el.querySelectorAll('pre').length >= 1 &&
+                        el.querySelectorAll('pre').length === 1 &&
                         style.display !== 'inline') {
-                        // Check: iska parent me siblings hain (AI vs user turn structure)
                         let parent = el.parentElement;
                         if (parent && parent.children.length >= 2) {
                             return el;
@@ -468,7 +466,7 @@
                     el = el.parentElement;
                     depth++;
                 }
-                // Fallback — lastPre khud return karo
+                // Fallback — lastPre khud return karo (isolated — sirf ek pre)
                 return lastPre;
             }
 
@@ -523,34 +521,36 @@
     setInterval(() => {
         if (isRunning) return;
 
-        // Saare pre blocks check karo — last wala jo action deta ho
-        let allPres = document.querySelectorAll('pre');
-        if (!allPres.length) return;
-
-        // Streaming settle check — last pre ka text 2 cycles stable hona chahiye
-        let lastPre = allPres[allPres.length - 1];
-        let codeEl  = lastPre.querySelector('code');
-        let preText = (codeEl ? codeEl.textContent : lastPre.innerText).trim();
-
-        if (preText !== lastTextSeen) {
-            lastTextSeen = preText;
-            return; // abhi stream chal rahi hai — wait karo
-        }
-
-        // Already processed?
-        if (preText === lastProcessed) return;
-
-        // Container element nikalo
+        // FIX #1 + #4: latest AI message scope karo — page-wide <pre> scan HATA diya
         let el = getLastAIMessage();
         if (!el) return;
+
+        // Sirf isi message ke andar pre dekho
+        let pres = el.querySelectorAll('pre');
+        if (!pres.length) return;
+
+        let lastPre = pres[pres.length - 1];
+        let codeEl  = lastPre.querySelector('code');
+        let preText = (codeEl ? codeEl.textContent : lastPre.innerText).trim();
+        if (!preText) return;
+
+        // FIX #6: 2-cycle stable hona chahiye — DOM flicker pe false trigger na ho
+        if (preText === lastTextSeen) {
+            stableCount++;
+        } else {
+            lastTextSeen = preText;
+            stableCount  = 0;
+            return; // naya text — abhi stream/re-render chal raha hai
+        }
+        if (stableCount < 2) return;
 
         let action = extractAction(el);
         if (!action) return;
 
-        // Fingerprint check — same action dobara execute na ho
-        if (action.fp === lastProcessed) return;
+        // FIX #3: history-based dedup — scroll pe purana command dobara na chale
+        if (processedFps.has(action.fp)) return;
+        processedFps.add(action.fp);
 
-        lastProcessed = action.fp;
         console.log(`🚀 Action: ${action.type}`, action);
 
         if (action.type === 'cmd')   runCommand(action.cmd);
