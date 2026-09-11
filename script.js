@@ -4,6 +4,7 @@
 // @version      12.0
 // @match        *://chat.deepseek.com/*
 // @match        *://claude.ai/*
+// @match        *://gemini.google.com/*
 // @grant        GM_xmlhttpRequest
 // @connect      localhost
 // ==/UserScript==
@@ -14,6 +15,7 @@
     // ── Site Detection ────────────────────────────────────────────────────────
     const IS_CLAUDE   = location.hostname === 'claude.ai';
     const IS_DEEPSEEK = location.hostname === 'chat.deepseek.com';
+    const IS_GEMINI   = location.hostname === 'gemini.google.com';
 
     let processedFps  = new Set();  // FIX #3: history of executed fingerprints
     let lastTextSeen  = '';
@@ -58,7 +60,7 @@
                 justify-content: space-between;
                 align-items: center;
             ">
-                <span>⚡ Termux Agent ${IS_CLAUDE ? '(Claude)' : '(DeepSeek)'}</span>
+                <span>⚡ Termux Agent ${IS_CLAUDE ? '(Claude)' : IS_GEMINI ? '(Gemini)' : '(DeepSeek)'}</span>
                 <span id="t-status" style="color:#00ff88;">Running...</span>
             </div>
             <div id="t-output" style="
@@ -211,6 +213,8 @@
     function sendToAI(output) {
         if (IS_CLAUDE) {
             sendToClaude(output);
+        } else if (IS_GEMINI) {
+            sendToGemini(output);
         } else {
             sendToDeepSeek(output);
         }
@@ -265,6 +269,58 @@
                 sendToAI('❌ Claude send button nahi mila.');
             }
 
+            setTimeout(() => { isRunning = false; }, 2000);
+        }, 1000);
+    }
+
+    // ── Gemini sender ─────────────────────────────────────────────────────────
+    function sendToGemini(output) {
+        // Gemini ka contenteditable input box
+        let editor = document.querySelector('div[contenteditable="true"]');
+        if (!editor) {
+            console.log('❌ Gemini editor not found');
+            isRunning = false;
+            return;
+        }
+
+        try {
+            // 1) Focus karo
+            editor.click();
+            editor.focus();
+
+            // 2) Purana content clear karo
+            editor.innerHTML = '';
+
+            // 3) Naya text insert karo (Angular/Material ko batao)
+            document.execCommand('insertText', false, output);
+
+            // 4) Input events fire karo — Angular detect kare
+            editor.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }));
+            editor.dispatchEvent(new Event('change', { bubbles: true }));
+        } catch(err) {
+            console.log('❌ Gemini insert error:', err);
+            isRunning = false;
+            return;
+        }
+
+        // Send button click — tumhara confirmed selector
+        setTimeout(() => {
+            let sendBtn = document.querySelector('button[aria-label="Send message"]');
+            if (sendBtn && !sendBtn.disabled) {
+                sendBtn.click();
+                console.log('✅ Gemini ko send kiya!');
+            } else {
+                // Fallback — mat-icon se dhundho
+                let fallback = document.querySelector('button[data-mat-icon-name="arrow_upward"]')
+                            || document.querySelector('button mat-icon[data-mat-icon-name="arrow_upward"]')?.closest('button');
+                if (fallback) {
+                    fallback.click();
+                    console.log('✅ Gemini fallback send kiya!');
+                } else {
+                    console.log('❌ Gemini send button nahi mila');
+                    sendToAI('❌ Gemini send button nahi mila.');
+                }
+            }
             setTimeout(() => { isRunning = false; }, 2000);
         }, 1000);
     }
@@ -471,6 +527,27 @@
             }
 
             return null;
+        } else if (IS_GEMINI) {
+            // Gemini — response paragraphs (tumhara confirmed selector)
+            // Pura response container dhundho
+            let containers = document.querySelectorAll('model-response');
+            if (containers.length) return containers[containers.length - 1];
+
+            // Fallback — data-path-to-node wale paragraphs ka parent
+            let paras = document.querySelectorAll('p[data-path-to-node]');
+            if (!paras.length) return null;
+            // Saare paras ka common parent container return karo
+            let last = paras[paras.length - 1];
+            let el = last.parentElement;
+            let depth = 0;
+            while (el && el.tagName !== 'BODY' && depth < 8) {
+                if (el.tagName === 'DIV' && el.querySelectorAll('p[data-path-to-node]').length > 0) {
+                    return el;
+                }
+                el = el.parentElement;
+                depth++;
+            }
+            return last;
         } else {
             // DeepSeek
             let msgs = document.querySelectorAll('.ds-markdown.ds-assistant-message-main-content');
@@ -480,13 +557,21 @@
     }
 
     function extractAction(el) {
+        // Gemini ke liye — <pre> nahi hote, plain <p> tags mein code hota hai
+        // Isliye pehle <pre> blocks dekho, phir Gemini ke liye <p> tags
+        let blocks = [];
         let pres = el.querySelectorAll('pre');
-        // BUG 2 fix: newest <pre> block pehle — streaming ke dauraan latest action prefer
-        for (let i = pres.length - 1; i >= 0; i--) {
-            // FIX: Claude <pre><code>...</code></pre> render karta hai
-            // code element ka textContent zyada clean hota hai innerText se
-            let codeEl = pres[i].querySelector('code');
-            let text = (codeEl ? codeEl.textContent : pres[i].innerText).trim();
+        if (pres.length) {
+            blocks = Array.from(pres);
+        } else if (IS_GEMINI) {
+            // Gemini: saare p[data-path-to-node] ya plain p tags
+            blocks = Array.from(el.querySelectorAll('p[data-path-to-node], code, p'));
+        }
+
+        // BUG 2 fix: newest block pehle — streaming ke dauraan latest action prefer
+        for (let i = blocks.length - 1; i >= 0; i--) {
+            let codeEl = blocks[i].querySelector('code');
+            let text = (codeEl ? codeEl.textContent : blocks[i].innerText || blocks[i].textContent).trim();
             if (!text) continue;
 
             // Normalize: Windows CRLF → LF (copy-paste artifacts)
@@ -526,12 +611,24 @@
         if (!el) return;
 
         // Sirf isi message ke andar pre dekho
+        // Gemini ke liye p[data-path-to-node] fallback
         let pres = el.querySelectorAll('pre');
-        if (!pres.length) return;
+        let lastPre, preText;
 
-        let lastPre = pres[pres.length - 1];
-        let codeEl  = lastPre.querySelector('code');
-        let preText = (codeEl ? codeEl.textContent : lastPre.innerText).trim();
+        if (pres.length) {
+            lastPre = pres[pres.length - 1];
+            let codeEl = lastPre.querySelector('code');
+            preText = (codeEl ? codeEl.textContent : lastPre.innerText).trim();
+        } else if (IS_GEMINI) {
+            // Gemini: code ya p blocks check karo
+            let codeBlocks = el.querySelectorAll('code, p[data-path-to-node]');
+            if (!codeBlocks.length) return;
+            lastPre = codeBlocks[codeBlocks.length - 1];
+            preText = (lastPre.textContent || lastPre.innerText).trim();
+        } else {
+            return;
+        }
+
         if (!preText) return;
 
         // FIX #6: 2-cycle stable hona chahiye — DOM flicker pe false trigger na ho
@@ -558,6 +655,6 @@
         if (action.type === 'write') writeFile(action.path, action.content);
     }, 600);
 
-    console.log(`✅ Termux Agent loaded on ${IS_CLAUDE ? 'Claude.ai' : 'DeepSeek'}`);
+    console.log(`✅ Termux Agent loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : 'DeepSeek'}`);
 
 })();
