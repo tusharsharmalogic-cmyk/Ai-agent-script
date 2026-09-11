@@ -1,10 +1,11 @@
 // ==UserScript==
-// @name         Termux AI Agent+ (DeepSeek + Claude)
+// @name         Termux AI Agent+ (DeepSeek + Claude + ChatGPT)
 // @namespace    termux-agent
-// @version      12.0
+// @version      13.0
 // @match        *://chat.deepseek.com/*
 // @match        *://claude.ai/*
 // @match        *://gemini.google.com/*
+// @match        *://chatgpt.com/*
 // @grant        GM_xmlhttpRequest
 // @connect      localhost
 // ==/UserScript==
@@ -16,8 +17,10 @@
     const IS_CLAUDE   = location.hostname === 'claude.ai';
     const IS_DEEPSEEK = location.hostname === 'chat.deepseek.com';
     const IS_GEMINI   = location.hostname === 'gemini.google.com';
+    const IS_CHATGPT  = location.hostname === 'chatgpt.com';
 
     let processedFps  = new Set();  // FIX #3: history of executed fingerprints
+    let lastAIMsgCount = -1;        // FIX #7: dedup reset ke liye assistant msg count
     let lastTextSeen  = '';
     let stableCount   = 0;          // FIX #6: 2-cycle stable check
     let isRunning     = false;
@@ -215,6 +218,8 @@
             sendToClaude(output);
         } else if (IS_GEMINI) {
             sendToGemini(output);
+        } else if (IS_CHATGPT) {
+            sendToChatGPT(output);
         } else {
             sendToDeepSeek(output);
         }
@@ -487,6 +492,24 @@
     }
 
     // ── AI Message Detection ──────────────────────────────────────────────────
+    // Assistant messages ka count return karta hai. Scroll/virtualization pe
+    // count nahi badalta — sirf naya AI message aane pe badhta hai.
+    function getAssistantMsgCount() {
+        if (IS_CLAUDE) {
+            for (let sel of ['[data-testid="assistant-message"]', '.font-claude-message', '.group.relative.relative']) {
+                let n = document.querySelectorAll(sel).length;
+                if (n) return n;
+            }
+            return 0;
+        } else if (IS_CHATGPT) {
+            return document.querySelectorAll('[data-message-author-role="assistant"]').length;
+        } else if (IS_GEMINI) {
+            return document.querySelectorAll('model-response').length;
+        } else {
+            return document.querySelectorAll('.ds-markdown.ds-assistant-message-main-content').length;
+        }
+    }
+
     function getLastAIMessage() {
         if (IS_CLAUDE) {
             // Strategy 1: known stable selectors — Claude UI versions
@@ -527,6 +550,26 @@
             }
 
             return null;
+        } else if (IS_CHATGPT) {
+            // ChatGPT — last assistant message
+            // Primary: data-message-author-role="assistant"
+            let msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+            if (msgs.length) return msgs[msgs.length - 1];
+
+            // Fallback: p[data-start] wale paragraphs ka parent container
+            let paras = document.querySelectorAll('p[data-start][data-end]');
+            if (!paras.length) return null;
+            let last = paras[paras.length - 1];
+            let el = last.parentElement;
+            let depth = 0;
+            while (el && el.tagName !== 'BODY' && depth < 8) {
+                if (el.tagName === 'DIV' && el.querySelectorAll('p[data-start]').length > 0) {
+                    return el;
+                }
+                el = el.parentElement;
+                depth++;
+            }
+            return last;
         } else if (IS_GEMINI) {
             // Gemini — response paragraphs (tumhara confirmed selector)
             // Pura response container dhundho
@@ -563,6 +606,9 @@
         let pres = el.querySelectorAll('pre');
         if (pres.length) {
             blocks = Array.from(pres);
+        } else if (IS_CHATGPT) {
+            // ChatGPT: p[data-start] paragraphs mein code hota hai
+            blocks = Array.from(el.querySelectorAll('p[data-start], code, pre'));
         } else if (IS_GEMINI) {
             // Gemini: saare p[data-path-to-node] ya plain p tags
             blocks = Array.from(el.querySelectorAll('p[data-path-to-node], code, p'));
@@ -610,6 +656,16 @@
         let el = getLastAIMessage();
         if (!el) return;
 
+        // FIX #7: naya AI message aaya → dedup set reset karo.
+        // Signal: assistant message count. Scroll/virtualization pe React
+        // DOM remount karta hai (element ref badalta hai) lekin count same
+        // rehta hai. Isliye count safe hai — na same-text pe fail, na scroll pe.
+        let msgCount = getAssistantMsgCount();
+        if (msgCount !== lastAIMsgCount) {
+            lastAIMsgCount = msgCount;
+            processedFps.clear();
+        }
+
         // Sirf isi message ke andar pre dekho
         // Gemini ke liye p[data-path-to-node] fallback
         let pres = el.querySelectorAll('pre');
@@ -619,6 +675,19 @@
             lastPre = pres[pres.length - 1];
             let codeEl = lastPre.querySelector('code');
             preText = (codeEl ? codeEl.textContent : lastPre.innerText).trim();
+        } else if (IS_CHATGPT) {
+            // ChatGPT: pre.cm-content blocks ya p[data-start] paragraphs
+            let chatgptBlocks = el.querySelectorAll('pre.cm-content, pre');
+            if (chatgptBlocks.length) {
+                lastPre = chatgptBlocks[chatgptBlocks.length - 1];
+                let codeEl = lastPre.querySelector('code');
+                preText = (codeEl ? codeEl.textContent : lastPre.innerText || lastPre.textContent).trim();
+            } else {
+                let paras = el.querySelectorAll('p[data-start]');
+                if (!paras.length) return;
+                lastPre = paras[paras.length - 1];
+                preText = (lastPre.textContent || lastPre.innerText).trim();
+            }
         } else if (IS_GEMINI) {
             // Gemini: code ya p blocks check karo
             let codeBlocks = el.querySelectorAll('code, p[data-path-to-node]');
@@ -655,6 +724,53 @@
         if (action.type === 'write') writeFile(action.path, action.content);
     }, 600);
 
-    console.log(`✅ Termux Agent loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : 'DeepSeek'}`);
+    // ── ChatGPT Sender ────────────────────────────────────────────────────────
+    function sendToChatGPT(output) {
+        // ChatGPT contenteditable div use karta hai — textarea hidden hai
+        const editor = document.querySelector('div#prompt-textarea[contenteditable="true"]');
+        if (!editor) { isRunning = false; return; }
+
+        // Focus + content set karo
+        editor.focus();
+        // Pehle clear karo
+        editor.innerHTML = '';
+        // Text insert karo — execCommand sabse reliable hai contenteditable ke liye
+        document.execCommand('insertText', false, output);
+
+        // Fallback agar execCommand kaam na kare
+        if (!editor.textContent.trim()) {
+            editor.textContent = output;
+            editor.dispatchEvent(new InputEvent('input', {bubbles: true}));
+        }
+
+        setTimeout(() => {
+            let clicked = false;
+
+            // Primary: id="composer-submit-button" + data-testid="send-button"
+            let btn1 = document.querySelector('button#composer-submit-button[data-testid="send-button"]');
+            if (btn1 && btn1.getAttribute('aria-disabled') !== 'true') { btn1.click(); clicked = true; }
+
+            // Fallback: sirf data-testid
+            if (!clicked) {
+                let btn2 = document.querySelector('[data-testid="send-button"]');
+                if (btn2 && btn2.getAttribute('aria-disabled') !== 'true') { btn2.click(); clicked = true; }
+            }
+
+            // Fallback: aria-label "Send prompt"
+            if (!clicked) {
+                let btn3 = document.querySelector('button[aria-label="Send prompt"]');
+                if (btn3 && btn3.getAttribute('aria-disabled') !== 'true') { btn3.click(); clicked = true; }
+            }
+
+            if (!clicked) {
+                console.log('❌ ChatGPT send button nahi mila');
+                sendToAI('❌ ChatGPT send button nahi mila.');
+            }
+
+            setTimeout(() => { isRunning = false; }, 2000);
+        }, 1000);
+    }
+
+    console.log(`✅ Termux Agent loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
 
 })();
