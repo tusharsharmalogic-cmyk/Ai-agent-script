@@ -579,14 +579,14 @@
 
             // EDIT_FILE — lenient: >>> ke baad optional whitespace/newlines allow
             let editMatch = text.match(
-                /EDIT_FILE:\s*(.+?)\nOLD_STR\s*\n<<<\n([\s\S]*?)\n>>>\s*\nNEW_STR\s*\n<<<\n([\s\S]*?)\n>>>\s*(?:$|\n)/
+                /EDIT_FILE:\s*(.+?)\nOLD_STR\s*\n<{1,3}\n([\s\S]*?)\n>{1,3}\s*\nNEW_STR\s*\n<{1,3}\n([\s\S]*?)\n>{1,3}\s*(?:$|\n)/
             );
             if (editMatch) {
                 return {type: 'edit', path: editMatch[1].trim(), oldStr: editMatch[2], newStr: editMatch[3], fp: text};
             }
 
             // WRITE_FILE — lenient
-            let writeMatch = text.match(/WRITE_FILE:\s*(.+?)\n<<<\n([\s\S]*?)\n>>>\s*(?:$|\n)/);
+            let writeMatch = text.match(/WRITE_FILE:\s*(.+?)\n<{1,3}\n([\s\S]*?)\n>{1,3}\s*(?:$|\n)/);
             if (writeMatch) {
                 return {type: 'write', path: writeMatch[1].trim(), content: writeMatch[2], fp: text};
             }
