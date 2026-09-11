@@ -494,14 +494,14 @@
 
             // EDIT_FILE — lenient: >>> ke baad optional whitespace/newlines allow
             let editMatch = text.match(
-                /EDIT_FILE:\s*(.+?)\nOLD_STR\s*\n<<<\n([\s\S]*?)\n>>>\s*\nNEW_STR\s*\n<<<\n([\s\S]*?)\n>>>\s*$/
+                /EDIT_FILE:\s*(.+?)\nOLD_STR\s*\n<<<\n([\s\S]*?)\n>>>\s*\nNEW_STR\s*\n<<<\n([\s\S]*?)\n>>>\s*(?:$|\n)/
             );
             if (editMatch) {
                 return {type: 'edit', path: editMatch[1].trim(), oldStr: editMatch[2], newStr: editMatch[3], fp: text};
             }
 
             // WRITE_FILE — lenient
-            let writeMatch = text.match(/WRITE_FILE:\s*(.+?)\n<<<\n([\s\S]*?)\n>>>\s*$/);
+            let writeMatch = text.match(/WRITE_FILE:\s*(.+?)\n<<<\n([\s\S]*?)\n>>>\s*(?:$|\n)/);
             if (writeMatch) {
                 return {type: 'write', path: writeMatch[1].trim(), content: writeMatch[2], fp: text};
             }
@@ -556,7 +556,7 @@
         if (action.type === 'cmd')   runCommand(action.cmd);
         if (action.type === 'edit')  editFile(action.path, action.oldStr, action.newStr);
         if (action.type === 'write') writeFile(action.path, action.content);
-    }, 2000);
+    }, 600);
 
     console.log(`✅ Termux Agent loaded on ${IS_CLAUDE ? 'Claude.ai' : 'DeepSeek'}`);
 
