@@ -118,6 +118,7 @@
                     clearInterval(pollInterval);
                     pollInterval = null;
                     if (runTimeout) { clearTimeout(runTimeout); runTimeout = null; }
+                    showPill("❌ Connection lost", "error"); hidePill();
                     isRunning = false;
                     sendToAI('❌ Server se connection toot gaya polling ke dauraan.');
                 }
