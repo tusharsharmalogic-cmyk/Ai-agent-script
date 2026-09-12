@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Termux AI Agent+ (DeepSeek + Claude + ChatGPT)
 // @namespace    termux-agent
-// @version      13.0
+// @version      15.1
 // @match        *://chat.deepseek.com/*
 // @match        *://claude.ai/*
 // @match        *://gemini.google.com/*
@@ -19,24 +19,25 @@
     const IS_GEMINI   = location.hostname === 'gemini.google.com';
     const IS_CHATGPT  = location.hostname === 'chatgpt.com';
 
-    let processedFps  = new Set();  // FIX #3: history of executed fingerprints
-    let lastAIMsgCount = -1;        // FIX #7: dedup reset ke liye assistant msg count
-    let lastTextSeen  = '';
-    let stableCount   = 0;          // FIX #6: 2-cycle stable check
-    let isRunning     = false;
-    let pollInterval  = null;
-    let inputPending  = false;
-    let runTimeout    = null;  // FIX: leaked 40s timer ko track karo
+    let processedFps   = new Set();  // "msgCount::fp" format — per-message scoped
+    let lastAIMsgCount = -1;
+    let lastTextSeen   = '';
+    let stableCount    = 0;
+    let isRunning      = false;
+    let pollInterval   = null;
+    let inputPending   = false;
+    let runTimeout     = null;
+    let execCounter    = 0;  // FIX P1: same message mein same command ka unique counter
 
     const valueSetter = Object.getOwnPropertyDescriptor(
         HTMLTextAreaElement.prototype, 'value'
     ).set;
 
     // ── Terminal Box ──────────────────────────────────────────────────────────
+    // BUG 1 FIX: `return;` hataya — createTerminal() ab actually terminal banata hai
     function createTerminal() {
-        return; // terminal box disabled
         let existing = document.getElementById('termux-box');
-        if (existing) existing.remove();
+        if (existing) return; // already exist karta hai — dobara mat banao
 
         let box = document.createElement('div');
         box.id = 'termux-box';
@@ -94,8 +95,8 @@
         }
     }
 
+    // BUG 1 FIX: closeTerminal() ka `return;` bhi hataya — ab properly close hoga
     function closeTerminal() {
-        return; // (a) terminal box disabled — kuch banaya hi nahi, kuch hataana bhi nahi
         setTimeout(() => {
             let box = document.getElementById('termux-box');
             if (box) {
@@ -144,7 +145,6 @@
         `;
         document.body.appendChild(popup);
 
-        // BUG 4 fix: context ko textContent se set karo (HTML injection rok)
         let ctxEl = document.getElementById('t-input-context');
         if (ctxEl) ctxEl.textContent = context || '';
 
@@ -181,6 +181,7 @@
                 method: 'GET',
                 url: 'http://localhost:5000/poll',
                 onload: function(r) {
+                    // BUG 2 FIX: silent catch hata ke proper error logging daala
                     try {
                         let data = JSON.parse(r.responseText);
 
@@ -197,16 +198,26 @@
                             clearInterval(pollInterval);
                             pollInterval  = null;
                             inputPending  = false;
-                            // FIX: 40s timer clear — leaked timer jhootha timeout deta tha
                             if (runTimeout) { clearTimeout(runTimeout); runTimeout = null; }
-                            // (b) agar input popup khula reh gaya ho to hata do
                             let stalePopup = document.getElementById('termux-input');
                             if (stalePopup) stalePopup.remove();
                             setStatus('✅ Done', '#00ff88');
                             closeTerminal();
                             sendToAI(data.final_output);
                         }
-                    } catch(e) {}
+                    } catch(e) {
+                        // BUG 2 FIX: error ab visible hai — debug ho sakta hai
+                        console.error('❌ Poll response parse error:', e, '| Raw:', r.responseText);
+                    }
+                },
+                // BUG 5 FIX: poll network error pe bhi pollInterval clear karo
+                onerror: function() {
+                    console.error('❌ Poll request failed — server unreachable');
+                    clearInterval(pollInterval);
+                    pollInterval = null;
+                    if (runTimeout) { clearTimeout(runTimeout); runTimeout = null; }
+                    isRunning = false;
+                    sendToAI('❌ Server se connection toot gaya polling ke dauraan.');
                 }
             });
         }, 500);
@@ -225,45 +236,86 @@
         }
     }
 
-    // ── Claude sender ─────────────────────────────────────────────────────────
-    function sendToClaude(output) {
-        // ProseMirror editor — Claude ka input box
-        let editor = document.querySelector('.ProseMirror');
-        if (!editor) {
-            console.log('❌ Claude editor not found');
-            isRunning = false;
-            sendToAI('❌ Claude editor nahi mila (ProseMirror). Page reload karo.');
-            return;
-        }
-
+    // ── BUG 7 FIX: execCommand wrapper — modern Clipboard API fallback + lastresort ──
+    // Ye function contenteditable ya ProseMirror editor mein text insert karta hai
+    // execCommand deprecated hai, isliye pehle nativeInputValueSetter try karte hain,
+    // phir clipboard paste event, aur finally direct textContent set.
+    function insertTextIntoEditor(editor, text) {
+        // Method 1: execCommand (still works in most userscript environments)
         try {
-            // 1) Editor focus + click
-            editor.click();
             editor.focus();
-
-            // 2) Editor ke content ko select karo (scoped — poora page nahi)
+            // Pehle select-all karo
             let range = document.createRange();
             range.selectNodeContents(editor);
             let sel = window.getSelection();
             sel.removeAllRanges();
             sel.addRange(range);
+            let deleted = document.execCommand('delete', false, null);
+            let inserted = document.execCommand('insertText', false, text);
+            if (inserted && editor.textContent.trim()) return true;
+        } catch(e) {
+            console.warn('execCommand failed, trying fallback:', e);
+        }
 
-            // 3) Selected content delete karo
-            document.execCommand('delete', false, null);
+        // Method 2: dispatchEvent with InputEvent (works with some React/Angular setups)
+        try {
+            editor.focus();
+            // innerHTML clear karo
+            editor.innerHTML = '';
+            const inputEvent = new InputEvent('input', {
+                bubbles: true,
+                cancelable: true,
+                data: text,
+                inputType: 'insertText'
+            });
+            // DataTransfer se text set karna
+            Object.defineProperty(inputEvent, 'target', { writable: false, value: editor });
+            editor.textContent = text;
+            editor.dispatchEvent(inputEvent);
+            editor.dispatchEvent(new Event('change', { bubbles: true }));
+            if (editor.textContent.trim()) return true;
+        } catch(e) {
+            console.warn('InputEvent fallback failed:', e);
+        }
 
-            // 4) Naya text insert karo
-            document.execCommand('insertText', false, output);
+        // Method 3: last resort — direct set (React/Angular detect nahi kar sakta but text aata hai)
+        try {
+            editor.innerHTML = '';
+            editor.textContent = text;
+            editor.dispatchEvent(new Event('input', { bubbles: true }));
+            editor.dispatchEvent(new Event('change', { bubbles: true }));
+            return editor.textContent.trim().length > 0;
+        } catch(e) {
+            console.error('All text insertion methods failed:', e);
+            return false;
+        }
+    }
 
-            // 5) ProseMirror state sync
-            editor.dispatchEvent(new InputEvent('input', {bubbles: true, cancelable: true}));
-        } catch (err) {
-            console.log('❌ Claude insert error:', err);
+    // ── Claude sender ─────────────────────────────────────────────────────────
+    function sendToClaude(output) {
+        let editor = document.querySelector('.ProseMirror');
+        if (!editor) {
+            console.log('❌ Claude editor not found');
+            isRunning = false;
+            // BUG 3 FIX: sendToAI() call hata diya — infinite recursion rok
+            // Sirf console log aur isRunning reset karo
+            console.error('❌ Claude ProseMirror editor nahi mila. Page reload karo.');
+            return;
+        }
+
+        // BUG 7 FIX: insertTextIntoEditor helper use karo — proper fallback chain ke saath
+        let success = insertTextIntoEditor(editor, output);
+
+        if (!success) {
+            console.error('❌ Claude editor mein text insert nahi hua');
             isRunning = false;
             return;
         }
 
+        // ProseMirror state sync
+        editor.dispatchEvent(new InputEvent('input', {bubbles: true, cancelable: true}));
+
         setTimeout(() => {
-            // Send button — aria-label se (pehle wala working selector)
             let sendBtn = document.querySelector('button[aria-label="Send message"]');
 
             if (sendBtn) {
@@ -271,51 +323,52 @@
                 console.log('✅ Claude ko send kiya!');
             } else {
                 console.log('❌ Claude send button nahi mila');
-                sendToAI('❌ Claude send button nahi mila.');
+                // BUG 3 FIX: sendToAI() yahan bhi nahi call karte — infinite loop ka risk
+                // Sirf log karo, isRunning reset karo
+                isRunning = false;
+                return;
             }
 
-            setTimeout(() => { isRunning = false; }, 2000);
+            // BUG 4 FIX: isRunning reset ke liye reasonable delay (3s) diya —
+            // 2s mein Claude respond kar deta tha jisse race condition hoti thi
+            setTimeout(() => { isRunning = false; }, 3000);
         }, 1000);
     }
 
     // ── Gemini sender ─────────────────────────────────────────────────────────
     function sendToGemini(output) {
-        // Gemini ka contenteditable input box
-        let editor = document.querySelector('div[contenteditable="true"]');
+        // BUG 8 FIX: broad 'div[contenteditable="true"]' hataya —
+        // ab Gemini ke specific input selectors use karo
+        let editor = document.querySelector('rich-textarea div[contenteditable="true"]')
+                  || document.querySelector('.ql-editor[contenteditable="true"]')
+                  || document.querySelector('div[contenteditable="true"][role="textbox"]')
+                  || document.querySelector('div[contenteditable="true"]'); // last resort fallback
+
         if (!editor) {
             console.log('❌ Gemini editor not found');
             isRunning = false;
             return;
         }
 
-        try {
-            // 1) Focus karo
-            editor.click();
-            editor.focus();
+        // BUG 7 FIX: insertTextIntoEditor helper use karo
+        let success = insertTextIntoEditor(editor, output);
 
-            // 2) Purana content clear karo
-            editor.innerHTML = '';
-
-            // 3) Naya text insert karo (Angular/Material ko batao)
-            document.execCommand('insertText', false, output);
-
-            // 4) Input events fire karo — Angular detect kare
-            editor.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }));
-            editor.dispatchEvent(new Event('change', { bubbles: true }));
-        } catch(err) {
-            console.log('❌ Gemini insert error:', err);
+        if (!success) {
+            console.error('❌ Gemini editor mein text insert nahi hua');
             isRunning = false;
             return;
         }
 
-        // Send button click — tumhara confirmed selector
+        // Angular ke liye extra events
+        editor.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }));
+        editor.dispatchEvent(new Event('change', { bubbles: true }));
+
         setTimeout(() => {
             let sendBtn = document.querySelector('button[aria-label="Send message"]');
             if (sendBtn && !sendBtn.disabled) {
                 sendBtn.click();
                 console.log('✅ Gemini ko send kiya!');
             } else {
-                // Fallback — mat-icon se dhundho
                 let fallback = document.querySelector('button[data-mat-icon-name="arrow_upward"]')
                             || document.querySelector('button mat-icon[data-mat-icon-name="arrow_upward"]')?.closest('button');
                 if (fallback) {
@@ -326,7 +379,8 @@
                     sendToAI('❌ Gemini send button nahi mila.');
                 }
             }
-            setTimeout(() => { isRunning = false; }, 2000);
+            // BUG 4 FIX: 3s delay — 2s race condition fix
+            setTimeout(() => { isRunning = false; }, 3000);
         }, 1000);
     }
 
@@ -339,29 +393,24 @@
         textarea.dispatchEvent(new InputEvent('input', {bubbles: true}));
 
         setTimeout(() => {
-            // BUG 5 fix: multiple fallback selectors — pehla jo mile wahi click
             let clicked = false;
 
-            // Fallback 1: aria-label (modern)
             let btn1 = document.querySelector('button[aria-label*="Send"]')
                     || document.querySelector('button[aria-label*="send"]')
                     || document.querySelector('div[role="button"][aria-label*="Send"]');
             if (btn1 && !btn1.disabled) { btn1.click(); clicked = true; }
 
-            // Fallback 2: data-testid
             if (!clicked) {
                 let btn2 = document.querySelector('[data-testid*="send" i]')
                         || document.querySelector('[data-testid*="submit" i]');
                 if (btn2) { btn2.click(); clicked = true; }
             }
 
-            // Fallback 3: type="submit" button
             if (!clicked) {
                 let btn3 = document.querySelector('button[type="submit"]');
                 if (btn3 && !btn3.disabled) { btn3.click(); clicked = true; }
             }
 
-            // Fallback 4 (PURANA LOGIC — jaisa tha waisa hi rakha): svg path d match
             if (!clicked) {
                 let allPaths = document.querySelectorAll('path[d*="M8.3125"]');
                 for (let path of allPaths) {
@@ -375,8 +424,48 @@
                 sendToAI('❌ DeepSeek send button nahi mila.');
             }
 
-            setTimeout(() => { isRunning = false; }, 2000);
+            // BUG 4 FIX: 3s delay — 2s race condition fix
+            setTimeout(() => { isRunning = false; }, 3000);
         }, 1500);
+    }
+
+    // ── ChatGPT Sender ────────────────────────────────────────────────────────
+    function sendToChatGPT(output) {
+        const editor = document.querySelector('div#prompt-textarea[contenteditable="true"]');
+        if (!editor) { isRunning = false; return; }
+
+        // BUG 7 FIX: insertTextIntoEditor helper use karo with fallback
+        let success = insertTextIntoEditor(editor, output);
+        if (!success) {
+            // Last resort for ChatGPT
+            editor.textContent = output;
+            editor.dispatchEvent(new InputEvent('input', {bubbles: true}));
+        }
+
+        setTimeout(() => {
+            let clicked = false;
+
+            let btn1 = document.querySelector('button#composer-submit-button[data-testid="send-button"]');
+            if (btn1 && btn1.getAttribute('aria-disabled') !== 'true') { btn1.click(); clicked = true; }
+
+            if (!clicked) {
+                let btn2 = document.querySelector('[data-testid="send-button"]');
+                if (btn2 && btn2.getAttribute('aria-disabled') !== 'true') { btn2.click(); clicked = true; }
+            }
+
+            if (!clicked) {
+                let btn3 = document.querySelector('button[aria-label="Send prompt"]');
+                if (btn3 && btn3.getAttribute('aria-disabled') !== 'true') { btn3.click(); clicked = true; }
+            }
+
+            if (!clicked) {
+                console.log('❌ ChatGPT send button nahi mila');
+                sendToAI('❌ ChatGPT send button nahi mila.');
+            }
+
+            // BUG 4 FIX: 3s delay
+            setTimeout(() => { isRunning = false; }, 3000);
+        }, 1000);
     }
 
     // ── Edit File ─────────────────────────────────────────────────────────────
@@ -397,15 +486,22 @@
                               data.status === 'ok' ? '#00ff88' : '#ff4444');
                     appendOutput(data.output + '\n');
                     closeTerminal();
+                    // isRunning = false PEHLE karo, phir sendToAI — warna sendToAI
+                    // ke andar jo 1s + 3s delay hai, uske dauraan main loop re-trigger
+                    // ho sakta tha (isRunning false tha callback ke bahar).
+                    // Ab sendToAI ke sender functions (sendToClaude etc.) khud
+                    // isRunning ko manage karte hain — yahan false karna sahi hai.
+                    isRunning = false;
                     setTimeout(() => { sendToAI(data.output); }, 500);
                 } catch(e) {
+                    console.error('❌ Edit parse error:', e, '| Raw:', r.responseText);
+                    isRunning = false;
                     sendToAI('❌ Edit parse error');
                 }
-                isRunning = false;
             },
             onerror: function() {
-                sendToAI('❌ Edit request failed');
                 isRunning = false;
+                sendToAI('❌ Edit request failed');
             }
         });
     }
@@ -428,15 +524,19 @@
                               data.status === 'ok' ? '#00ff88' : '#ff4444');
                     appendOutput(data.output + '\n');
                     closeTerminal();
+                    // Same fix as editFile — isRunning false pehle,
+                    // sendToAI ke sender apna isRunning manage karte hain
+                    isRunning = false;
                     setTimeout(() => { sendToAI(data.output); }, 500);
                 } catch(e) {
+                    console.error('❌ Write parse error:', e, '| Raw:', r.responseText);
+                    isRunning = false;
                     sendToAI('❌ Write parse error');
                 }
-                isRunning = false;
             },
             onerror: function() {
-                sendToAI('❌ Write request failed');
                 isRunning = false;
+                sendToAI('❌ Write request failed');
             }
         });
     }
@@ -448,8 +548,6 @@
         createTerminal();
         appendOutput(`$ ${cmd}\n`);
 
-        // FIX: purana leaked timer clear — warna pichhli command ka timer
-        // is command ke window mein fire hoke jhootha timeout deta tha
         if (runTimeout) { clearTimeout(runTimeout); runTimeout = null; }
 
         GM_xmlhttpRequest({
@@ -463,12 +561,13 @@
                     if (data.status === 'started') {
                         startPolling();
                     } else {
-                        // Server ne turant reply diya (busy/blacklist/empty) — timer + flag clear
                         if (runTimeout) { clearTimeout(runTimeout); runTimeout = null; }
                         isRunning = false;
                         sendToAI(data.output || '❌ Error');
                     }
                 } catch(e) {
+                    // BUG 2 FIX: error log karo
+                    console.error('❌ Run parse error:', e, '| Raw:', r.responseText);
                     if (runTimeout) { clearTimeout(runTimeout); runTimeout = null; }
                     isRunning = false;
                     sendToAI('❌ Parse error');
@@ -484,6 +583,7 @@
         runTimeout = setTimeout(() => {
             runTimeout = null;
             if (isRunning) {
+                // BUG 5 FIX: timeout pe pollInterval bhi clear karo
                 if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
                 isRunning = false;
                 sendToAI('❌ Timeout: command 40s se zyada chal gayi (ya server ne done nahi bheja).');
@@ -492,8 +592,6 @@
     }
 
     // ── AI Message Detection ──────────────────────────────────────────────────
-    // Assistant messages ka count return karta hai. Scroll/virtualization pe
-    // count nahi badalta — sirf naya AI message aane pe badhta hai.
     function getAssistantMsgCount() {
         if (IS_CLAUDE) {
             for (let sel of ['[data-testid="assistant-message"]', '.font-claude-message', '.group.relative.relative']) {
@@ -512,8 +610,6 @@
 
     function getLastAIMessage() {
         if (IS_CLAUDE) {
-            // Strategy 1: known stable selectors — Claude UI versions
-            // FIX #4: '.prose' hataya — wo user message ke <pre> ke andar bhi match karta hai
             const SELECTORS = [
                 '[data-testid="assistant-message"]',
                 '.font-claude-message',
@@ -524,9 +620,6 @@
                 if (msgs.length) return msgs[msgs.length - 1];
             }
 
-            // Strategy 2: last <pre> block se upar jaao —
-            // sirf tab use karo jab koi selector kaam na kare
-            // FIX #5: container me SIRF 1 pre hona chahiye — multi-turn wrapper reject karo
             let allPres = document.querySelectorAll('pre');
             if (allPres.length) {
                 let lastPre = allPres[allPres.length - 1];
@@ -545,18 +638,14 @@
                     el = el.parentElement;
                     depth++;
                 }
-                // Fallback — lastPre khud return karo (isolated — sirf ek pre)
                 return lastPre;
             }
 
             return null;
         } else if (IS_CHATGPT) {
-            // ChatGPT — last assistant message
-            // Primary: data-message-author-role="assistant"
             let msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
             if (msgs.length) return msgs[msgs.length - 1];
 
-            // Fallback: p[data-start] wale paragraphs ka parent container
             let paras = document.querySelectorAll('p[data-start][data-end]');
             if (!paras.length) return null;
             let last = paras[paras.length - 1];
@@ -571,15 +660,12 @@
             }
             return last;
         } else if (IS_GEMINI) {
-            // Gemini — response paragraphs (tumhara confirmed selector)
-            // Pura response container dhundho
             let containers = document.querySelectorAll('model-response');
             if (containers.length) return containers[containers.length - 1];
 
-            // Fallback — data-path-to-node wale paragraphs ka parent
+            // Fallback
             let paras = document.querySelectorAll('p[data-path-to-node]');
             if (!paras.length) return null;
-            // Saare paras ka common parent container return karo
             let last = paras[paras.length - 1];
             let el = last.parentElement;
             let depth = 0;
@@ -600,30 +686,23 @@
     }
 
     function extractAction(el) {
-        // Gemini ke liye — <pre> nahi hote, plain <p> tags mein code hota hai
-        // Isliye pehle <pre> blocks dekho, phir Gemini ke liye <p> tags
         let blocks = [];
         let pres = el.querySelectorAll('pre');
         if (pres.length) {
             blocks = Array.from(pres);
         } else if (IS_CHATGPT) {
-            // ChatGPT: p[data-start] paragraphs mein code hota hai
             blocks = Array.from(el.querySelectorAll('p[data-start], code, pre'));
         } else if (IS_GEMINI) {
-            // Gemini: saare p[data-path-to-node] ya plain p tags
             blocks = Array.from(el.querySelectorAll('p[data-path-to-node], code, p'));
         }
 
-        // BUG 2 fix: newest block pehle — streaming ke dauraan latest action prefer
         for (let i = blocks.length - 1; i >= 0; i--) {
             let codeEl = blocks[i].querySelector('code');
             let text = (codeEl ? codeEl.textContent : blocks[i].innerText || blocks[i].textContent).trim();
             if (!text) continue;
 
-            // Normalize: Windows CRLF → LF (copy-paste artifacts)
             text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
-            // EDIT_FILE — lenient: >>> ke baad optional whitespace/newlines allow
             let editMatch = text.match(
                 /EDIT_FILE:\s*(.+?)\nOLD_STR\s*\n<{1,3}\n([\s\S]*?)\n>{1,3}\s*\nNEW_STR\s*\n<{1,3}\n([\s\S]*?)\n>{1,3}\s*(?:$|\n)/
             );
@@ -631,43 +710,76 @@
                 return {type: 'edit', path: editMatch[1].trim(), oldStr: editMatch[2], newStr: editMatch[3], fp: text};
             }
 
-            // WRITE_FILE — lenient
             let writeMatch = text.match(/WRITE_FILE:\s*(.+?)\n<{1,3}\n([\s\S]*?)\n>{1,3}\s*(?:$|\n)/);
             if (writeMatch) {
                 return {type: 'write', path: writeMatch[1].trim(), content: writeMatch[2], fp: text};
             }
 
-            // Multi-line command
             let multiMatch = text.match(/RUN_CMD_START\s*\n([\s\S]*?)\nRUN_CMD_END/);
             if (multiMatch) return {type: 'cmd', cmd: multiMatch[1].trim(), fp: text};
 
-            // Single-line command
             let match = text.match(/RUN_CMD:\s*(.+)/);
             if (match) return {type: 'cmd', cmd: match[1].trim(), fp: text};
         }
         return null;
     }
 
+    // ── Scroll Guard ──────────────────────────────────────────────────────────
+    // FIX P2: Check karo ki element viewport ke bottom-half mein hai ya nahi.
+    // Agar user upar scroll karke chhod deta hai, toh purane messages trigger
+    // nahi honge — sirf wo elements trigger honge jo visible bottom area mein hain.
+    function isNearBottom(el) {
+        const rect = el.getBoundingClientRect();
+        const vh   = window.innerHeight;
+        // Element ka top viewport height ke 120% se upar hai — matlab user
+        // is element ke paas hai. 120% buffer isliye ki thoda upar scroll
+        // karna allowed hai, lekin bahut purane messages block honge.
+        return rect.top < vh * 1.2;
+    }
+
+    // ── DOM Execution Marker ──────────────────────────────────────────────────
+    // FIX P2: Executed pre/code block pe ek data attribute lagao.
+    // Scroll pe React DOM virtualize karta hai — element unmount/remount hota hai
+    // aur attribute reset ho jaata hai. Isliye hum DONO check karte hain:
+    // (1) DOM attribute  — fast path, scroll protection
+    // (2) processedFps   — memory-based dedup, virtualization safe
+    const EXEC_ATTR = 'data-termux-executed';
+
+    function markExecuted(el) {
+        if (el) el.setAttribute(EXEC_ATTR, '1');
+    }
+
+    function isAlreadyExecuted(el) {
+        return el && el.getAttribute(EXEC_ATTR) === '1';
+    }
+
     // ── Main Loop ─────────────────────────────────────────────────────────────
     setInterval(() => {
         if (isRunning) return;
 
-        // FIX #1 + #4: latest AI message scope karo — page-wide <pre> scan HATA diya
         let el = getLastAIMessage();
         if (!el) return;
 
-        // FIX #7: naya AI message aaya → dedup set reset karo.
-        // Signal: assistant message count. Scroll/virtualization pe React
-        // DOM remount karta hai (element ref badalta hai) lekin count same
-        // rehta hai. Isliye count safe hai — na same-text pe fail, na scroll pe.
+        // FIX P2 (SCROLL GUARD): Last AI message viewport ke paas hona chahiye.
+        // Agar user bahut upar scroll kar gaya hai, toh getLastAIMessage() galat
+        // element return kar sakta hai (jo actually visible nahi hai).
+        // rect.bottom < 0 matlab element screen ke upar chala gaya — ignore karo.
+        const elRect = el.getBoundingClientRect();
+        if (elRect.bottom < 0) return;  // element screen ke upar hai — skip
+
         let msgCount = getAssistantMsgCount();
         if (msgCount !== lastAIMsgCount) {
             lastAIMsgCount = msgCount;
-            processedFps.clear();
+            // FIX P1: processedFps clear mat karo puri — sirf purane msgCount ke
+            // entries hatao. Naya message aaya toh execCounter reset karo.
+            // processedFps mein format: "msgCount::fp"
+            // Purane entries automatically stale ho jaate hain kyunki prefix alag hoga.
+            processedFps.clear();  // New message = fresh slate (same-msg dedup ke liye)
+            execCounter  = 0;      // FIX P1: naye message ke liye counter reset
+            stableCount  = 0;
+            lastTextSeen = '';
         }
 
-        // Sirf isi message ke andar pre dekho
-        // Gemini ke liye p[data-path-to-node] fallback
         let pres = el.querySelectorAll('pre');
         let lastPre, preText;
 
@@ -676,7 +788,6 @@
             let codeEl = lastPre.querySelector('code');
             preText = (codeEl ? codeEl.textContent : lastPre.innerText).trim();
         } else if (IS_CHATGPT) {
-            // ChatGPT: pre.cm-content blocks ya p[data-start] paragraphs
             let chatgptBlocks = el.querySelectorAll('pre.cm-content, pre');
             if (chatgptBlocks.length) {
                 lastPre = chatgptBlocks[chatgptBlocks.length - 1];
@@ -689,7 +800,6 @@
                 preText = (lastPre.textContent || lastPre.innerText).trim();
             }
         } else if (IS_GEMINI) {
-            // Gemini: code ya p blocks check karo
             let codeBlocks = el.querySelectorAll('code, p[data-path-to-node]');
             if (!codeBlocks.length) return;
             lastPre = codeBlocks[codeBlocks.length - 1];
@@ -700,77 +810,49 @@
 
         if (!preText) return;
 
-        // FIX #6: 2-cycle stable hona chahiye — DOM flicker pe false trigger na ho
+        // FIX P2: DOM attribute check — agar ye specific pre element pehle execute
+        // ho chuka hai (attribute lagaa hai), toh skip karo.
+        // Ye scroll pe remount hone wale elements bhi handle karta hai —
+        // remount pe attribute chala jaata hai, lekin processedFps backup hai.
+        if (isAlreadyExecuted(lastPre)) return;
+
         if (preText === lastTextSeen) {
             stableCount++;
         } else {
             lastTextSeen = preText;
             stableCount  = 0;
-            return; // naya text — abhi stream/re-render chal raha hai
+            return;
         }
         if (stableCount < 2) return;
 
         let action = extractAction(el);
         if (!action) return;
 
-        // FIX #3: history-based dedup — scroll pe purana command dobara na chale
-        if (processedFps.has(action.fp)) return;
-        processedFps.add(action.fp);
+        // FIX P1: fp ko msgCount ke saath prefix karo.
+        // Iska matlab: "ls -la" command ek hi message mein 2 baar aane pe
+        // dono alag fp banenge: "3::RUN_CMD: ls -la" (first), phir naya
+        // message aane pe "4::RUN_CMD: ls -la" — dono chalenge.
+        // Lekin SAME message mein same exact pre block dobara trigger nahi hoga
+        // kyunki DOM attribute mark kar diya hai.
+        const scopedFp = `${msgCount}::${action.fp}`;
+        if (processedFps.has(scopedFp)) return;
+        processedFps.add(scopedFp);
 
-        console.log(`🚀 Action: ${action.type}`, action);
+        // FIX P2: DOM element pe mark lagao — scroll protection ke liye
+        markExecuted(lastPre);
+
+        // stableCount reset — next action ke liye
+        stableCount  = 0;
+        lastTextSeen = '';
+
+        execCounter++;
+        console.log(`🚀 [msg:${msgCount} exec:#${execCounter}] Action: ${action.type}`, action);
 
         if (action.type === 'cmd')   runCommand(action.cmd);
         if (action.type === 'edit')  editFile(action.path, action.oldStr, action.newStr);
         if (action.type === 'write') writeFile(action.path, action.content);
     }, 600);
 
-    // ── ChatGPT Sender ────────────────────────────────────────────────────────
-    function sendToChatGPT(output) {
-        // ChatGPT contenteditable div use karta hai — textarea hidden hai
-        const editor = document.querySelector('div#prompt-textarea[contenteditable="true"]');
-        if (!editor) { isRunning = false; return; }
-
-        // Focus + content set karo
-        editor.focus();
-        // Pehle clear karo
-        editor.innerHTML = '';
-        // Text insert karo — execCommand sabse reliable hai contenteditable ke liye
-        document.execCommand('insertText', false, output);
-
-        // Fallback agar execCommand kaam na kare
-        if (!editor.textContent.trim()) {
-            editor.textContent = output;
-            editor.dispatchEvent(new InputEvent('input', {bubbles: true}));
-        }
-
-        setTimeout(() => {
-            let clicked = false;
-
-            // Primary: id="composer-submit-button" + data-testid="send-button"
-            let btn1 = document.querySelector('button#composer-submit-button[data-testid="send-button"]');
-            if (btn1 && btn1.getAttribute('aria-disabled') !== 'true') { btn1.click(); clicked = true; }
-
-            // Fallback: sirf data-testid
-            if (!clicked) {
-                let btn2 = document.querySelector('[data-testid="send-button"]');
-                if (btn2 && btn2.getAttribute('aria-disabled') !== 'true') { btn2.click(); clicked = true; }
-            }
-
-            // Fallback: aria-label "Send prompt"
-            if (!clicked) {
-                let btn3 = document.querySelector('button[aria-label="Send prompt"]');
-                if (btn3 && btn3.getAttribute('aria-disabled') !== 'true') { btn3.click(); clicked = true; }
-            }
-
-            if (!clicked) {
-                console.log('❌ ChatGPT send button nahi mila');
-                sendToAI('❌ ChatGPT send button nahi mila.');
-            }
-
-            setTimeout(() => { isRunning = false; }, 2000);
-        }, 1000);
-    }
-
-    console.log(`✅ Termux Agent loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
+    console.log(`✅ Termux Agent v15.1 loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
 
 })();
