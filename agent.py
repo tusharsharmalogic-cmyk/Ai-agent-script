@@ -447,6 +447,403 @@ def status():
     })
 
 
+# ── File Operation Endpoints ──────────────────────────────────────────────────
+
+def _resolve(path):
+    if not path:
+        return path
+    if not os.path.isabs(path):
+        return os.path.join(get_cwd(), path)
+    return path
+
+
+@app.route('/append', methods=['POST'])
+def append_file():
+    """File ke end me content add karo (file na ho to bana do)."""
+    data    = request.json
+    path    = data.get('path', '').strip()
+    content = data.get('content', '')
+
+    if not path:
+        return jsonify({"status": "error", "output": "❌ path missing"})
+
+    path = _resolve(path)
+    try:
+        os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+        # Smart newline: file exist karti hai, non-empty hai, aur newline pe end nahi hoti
+        # to content se pehle newline insert karo — warna lines chipak jaati hain
+        needs_newline = False
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            with open(path, 'rb') as fb:
+                fb.seek(-1, os.SEEK_END)
+                last_byte = fb.read(1)
+                if last_byte != b'\n':
+                    needs_newline = True
+        with open(path, 'a', encoding='utf-8') as f:
+            if needs_newline:
+                f.write('\n')
+            f.write(content)
+    except Exception as e:
+        return jsonify({"status": "error", "output": f"❌ Append error: {e}"})
+
+    size = os.path.getsize(path)
+    print(f"➕ APPEND: {path} (+{len(content)} chars, now {size} bytes)")
+    return jsonify({"status": "ok", "output": f"✅ Appended to {path} (now {size} bytes)"})
+
+
+@app.route('/delete', methods=['POST'])
+def delete_path():
+    """File ya directory delete — recursive flag se dir bhi."""
+    data      = request.json
+    path      = data.get('path', '').strip()
+    recursive = bool(data.get('recursive', False))
+
+    if not path:
+        return jsonify({"status": "error", "output": "❌ path missing"})
+
+    path = _resolve(path)
+
+    if not os.path.exists(path):
+        return jsonify({"status": "error", "output": f"❌ Not found: {path}"})
+
+    # Safety: home/root delete block
+    danger = ['/', HOME, '/sdcard', '/storage']
+    if os.path.abspath(path) in danger:
+        return jsonify({"status": "error", "output": f"🚫 Refusing to delete protected path: {path}"})
+
+    try:
+        if os.path.isdir(path):
+            if recursive:
+                import shutil
+                shutil.rmtree(path)
+                print(f"🗑️  RMDIR -r: {path}")
+                return jsonify({"status": "ok", "output": f"✅ Directory (recursive) deleted: {path}"})
+            else:
+                os.rmdir(path)
+                print(f"🗑️  RMDIR: {path}")
+                return jsonify({"status": "ok", "output": f"✅ Empty directory deleted: {path}"})
+        else:
+            os.remove(path)
+            print(f"🗑️  RM: {path}")
+            return jsonify({"status": "ok", "output": f"✅ File deleted: {path}"})
+    except OSError as e:
+        # Non-empty dir without recursive
+        if os.path.isdir(path) and not recursive:
+            return jsonify({"status": "error", "output": f"❌ Directory not empty. DELETE_DIR use karo (recursive): {e}"})
+        return jsonify({"status": "error", "output": f"❌ Delete error: {e}"})
+    except Exception as e:
+        return jsonify({"status": "error", "output": f"❌ Delete error: {e}"})
+
+
+@app.route('/move', methods=['POST'])
+def move_path():
+    """File/directory move ya rename."""
+    data = request.json
+    src  = data.get('src', '').strip()
+    dst  = data.get('dst', '').strip()
+
+    if not src or not dst:
+        return jsonify({"status": "error", "output": "❌ src ya dst missing"})
+
+    src = _resolve(src)
+    dst = _resolve(dst)
+
+    if not os.path.exists(src):
+        return jsonify({"status": "error", "output": f"❌ Source not found: {src}"})
+
+    try:
+        import shutil
+        os.makedirs(os.path.dirname(dst) or '.', exist_ok=True)
+        shutil.move(src, dst)
+        print(f"➡️  MOVE: {src} → {dst}")
+        return jsonify({"status": "ok", "output": f"✅ Moved: {src} → {dst}"})
+    except Exception as e:
+        return jsonify({"status": "error", "output": f"❌ Move error: {e}"})
+
+
+@app.route('/copy', methods=['POST'])
+def copy_path():
+    """File/directory copy."""
+    data = request.json
+    src  = data.get('src', '').strip()
+    dst  = data.get('dst', '').strip()
+
+    if not src or not dst:
+        return jsonify({"status": "error", "output": "❌ src ya dst missing"})
+
+    src = _resolve(src)
+    dst = _resolve(dst)
+
+    if not os.path.exists(src):
+        return jsonify({"status": "error", "output": f"❌ Source not found: {src}"})
+
+    try:
+        import shutil
+        os.makedirs(os.path.dirname(dst) or '.', exist_ok=True)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+        print(f"📋 COPY: {src} → {dst}")
+        return jsonify({"status": "ok", "output": f"✅ Copied: {src} → {dst}"})
+    except Exception as e:
+        return jsonify({"status": "error", "output": f"❌ Copy error: {e}"})
+
+
+@app.route('/list', methods=['POST'])
+def list_dir():
+    """Directory listing with type/size/mtime."""
+    data = request.json
+    path = data.get('path', '.').strip() or '.'
+
+    path = _resolve(path)
+
+    if not os.path.exists(path):
+        return jsonify({"status": "error", "output": f"❌ Not found: {path}"})
+    if not os.path.isdir(path):
+        return jsonify({"status": "error", "output": f"❌ Not a directory: {path}"})
+
+    try:
+        entries = sorted(os.listdir(path))
+        dirs, files = [], []
+        for name in entries:
+            full = os.path.join(path, name)
+            try:
+                st = os.stat(full)
+                mtime = time.strftime('%Y-%m-%d %H:%M', time.localtime(st.st_mtime))
+                if os.path.isdir(full):
+                    dirs.append(f"  📁 {name}/  ({mtime})")
+                else:
+                    sz = st.st_size
+                    if sz < 1024:
+                        szstr = f"{sz}B"
+                    elif sz < 1024 * 1024:
+                        szstr = f"{sz/1024:.1f}K"
+                    else:
+                        szstr = f"{sz/1024/1024:.1f}M"
+                    files.append(f"  📄 {name}  ({szstr}, {mtime})")
+            except Exception:
+                files.append(f"  ❓ {name}  (stat failed)")
+
+        header = f"📂 {path}/  — {len(dirs)} dirs, {len(files)} files"
+        out = [header] + dirs + files
+        print(f"📂 LIST: {path} ({len(dirs)}d/{len(files)}f)")
+        return jsonify({"status": "ok", "output": "\n".join(out)})
+    except Exception as e:
+        return jsonify({"status": "error", "output": f"❌ List error: {e}"})
+
+
+@app.route('/mkdir', methods=['POST'])
+def make_dir():
+    """Naya directory banao (parents bhi)."""
+    data = request.json
+    path = data.get('path', '').strip()
+
+    if not path:
+        return jsonify({"status": "error", "output": "❌ path missing"})
+
+    path = _resolve(path)
+    try:
+        os.makedirs(path, exist_ok=True)
+        print(f"📁 MKDIR: {path}")
+        return jsonify({"status": "ok", "output": f"✅ Directory created: {path}"})
+    except Exception as e:
+        return jsonify({"status": "error", "output": f"❌ mkdir error: {e}"})
+
+
+@app.route('/info', methods=['POST'])
+def file_info():
+    """File/directory ki details (size, mode, mtime, mime)."""
+    data = request.json
+    path = data.get('path', '').strip()
+
+    if not path:
+        return jsonify({"status": "error", "output": "❌ path missing"})
+
+    path = _resolve(path)
+
+    if not os.path.exists(path):
+        return jsonify({"status": "error", "output": f"❌ Not found: {path}"})
+
+    try:
+        st = os.stat(path)
+        is_dir = os.path.isdir(path)
+        info = [
+            f"📄 Path: {path}",
+            f"Type: {'Directory' if is_dir else 'File'}",
+            f"Size: {st.st_size} bytes",
+            f"Modified: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(st.st_mtime))}",
+            f"Accessed: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(st.st_atime))}",
+            f"Mode: {oct(st.st_mode)}",
+            f"UID/GID: {st.st_uid}/{st.st_gid}",
+        ]
+        if not is_dir:
+            import mimetypes
+            mt, _ = mimetypes.guess_type(path)
+            if mt:
+                info.append(f"MIME: {mt}")
+        print(f"ℹ️  INFO: {path}")
+        return jsonify({"status": "ok", "output": "\n".join(info)})
+    except Exception as e:
+        return jsonify({"status": "error", "output": f"❌ Info error: {e}"})
+
+
+@app.route('/find', methods=['POST'])
+def find_files():
+    """Filename pattern (glob) se files dhundho."""
+    data    = request.json
+    root    = data.get('root', '.').strip() or '.'
+    pattern = data.get('pattern', '*').strip() or '*'
+    maxres  = int(data.get('max', 200))
+
+    root = _resolve(root)
+
+    if not os.path.exists(root):
+        return jsonify({"status": "error", "output": f"❌ Root not found: {root}"})
+
+    import fnmatch
+    try:
+        matches = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+            for name in filenames + dirnames:
+                if fnmatch.fnmatch(name, pattern):
+                    matches.append(os.path.join(dirpath, name))
+                    if len(matches) >= maxres:
+                        break
+            if len(matches) >= maxres:
+                break
+
+        if not matches:
+            return jsonify({"status": "ok", "output": f"🔍 No matches for '{pattern}' in {root}"})
+
+        out = [f"🔍 {len(matches)} match(es) for '{pattern}' in {root}:"]
+        out += matches
+        print(f"🔍 FIND: {pattern} in {root} → {len(matches)} hits")
+        return jsonify({"status": "ok", "output": "\n".join(out)})
+    except Exception as e:
+        return jsonify({"status": "error", "output": f"❌ Find error: {e}"})
+
+
+@app.route('/grep', methods=['POST'])
+def grep_files():
+    """Regex se file(s) ke andar text search (file ya dir)."""
+    data    = request.json
+    path    = data.get('path', '.').strip() or '.'
+    pattern = data.get('pattern', '').strip()
+
+    if not pattern:
+        return jsonify({"status": "error", "output": "❌ pattern missing"})
+
+    path = _resolve(path)
+
+    if not os.path.exists(path):
+        return jsonify({"status": "error", "output": f"❌ Path not found: {path}"})
+
+    try:
+        regex = re.compile(pattern)
+    except re.error as e:
+        return jsonify({"status": "error", "output": f"❌ Bad regex: {e}"})
+
+    try:
+        files_to_check = []
+        if os.path.isfile(path):
+            files_to_check = [path]
+        else:
+            for dirpath, dirnames, filenames in os.walk(path):
+                dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+                for f in filenames:
+                    files_to_check.append(os.path.join(dirpath, f))
+                    if len(files_to_check) >= 500:
+                        break
+                if len(files_to_check) >= 500:
+                    break
+
+        results = []
+        for fp in files_to_check:
+            try:
+                if os.path.getsize(fp) > 1_000_000:
+                    continue
+                with open(fp, 'r', encoding='utf-8', errors='replace') as fh:
+                    for i, line in enumerate(fh, 1):
+                        if regex.search(line):
+                            snippet = line.rstrip()[:200]
+                            results.append(f"{fp}:{i}: {snippet}")
+                            if len(results) >= 200:
+                                break
+                if len(results) >= 200:
+                    break
+            except Exception:
+                continue
+
+        if not results:
+            return jsonify({"status": "ok", "output": f"🔍 No matches for /{pattern}/ in {path}"})
+
+        out = [f"🔍 {len(results)} match(es) for /{pattern}/ in {path}:"]
+        out += results
+        print(f"🔍 GREP: /{pattern}/ in {path} → {len(results)} hits")
+        return jsonify({"status": "ok", "output": "\n".join(out)})
+    except Exception as e:
+        return jsonify({"status": "error", "output": f"❌ Grep error: {e}"})
+
+
+@app.route('/head', methods=['POST'])
+def head_file():
+    """File ke pehle N lines."""
+    data = request.json
+    path = data.get('path', '').strip()
+    n    = int(data.get('n', 10))
+
+    if not path:
+        return jsonify({"status": "error", "output": "❌ path missing"})
+
+    path = _resolve(path)
+
+    if not os.path.exists(path):
+        return jsonify({"status": "error", "output": f"❌ Not found: {path}"})
+    if os.path.isdir(path):
+        return jsonify({"status": "error", "output": f"❌ Is a directory: {path}"})
+
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            lines = []
+            for i, line in enumerate(f):
+                if i >= n:
+                    break
+                lines.append(line.rstrip('\n'))
+        print(f"📄 HEAD -n {n}: {path}")
+        return jsonify({"status": "ok", "output": f"📄 First {n} lines of {path}:\n\n" + "\n".join(lines)})
+    except Exception as e:
+        return jsonify({"status": "error", "output": f"❌ Head error: {e}"})
+
+
+@app.route('/tail', methods=['POST'])
+def tail_file():
+    """File ke aakhri N lines."""
+    data = request.json
+    path = data.get('path', '').strip()
+    n    = int(data.get('n', 10))
+
+    if not path:
+        return jsonify({"status": "error", "output": "❌ path missing"})
+
+    path = _resolve(path)
+
+    if not os.path.exists(path):
+        return jsonify({"status": "error", "output": f"❌ Not found: {path}"})
+    if os.path.isdir(path):
+        return jsonify({"status": "error", "output": f"❌ Is a directory: {path}"})
+
+    try:
+        from collections import deque
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            lines = list(deque(f, maxlen=n))
+        print(f"📄 TAIL -n {n}: {path}")
+        return jsonify({"status": "ok", "output": f"📄 Last {n} lines of {path}:\n\n" + "".join(lines).rstrip()})
+    except Exception as e:
+        return jsonify({"status": "error", "output": f"❌ Tail error: {e}"})
+
+
 if __name__ == '__main__':
     print("╔══════════════════════════════════════════╗")
     print("║     🤖  Termux AI Agent Server           ║")

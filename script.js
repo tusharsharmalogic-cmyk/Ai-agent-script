@@ -511,6 +511,44 @@
         });
     }
 
+    // ── Generic JSON endpoint helper ──────────────────────────────────────────
+    function callEndpoint(endpoint, payload) {
+        isRunning = true;
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: 'http://localhost:5000' + endpoint,
+            headers: {'Content-Type': 'application/json'},
+            data: JSON.stringify(payload),
+            onload: function(r) {
+                try {
+                    let data = JSON.parse(r.responseText);
+                    isRunning = false;
+                    setTimeout(() => { sendToAI(data.output || '❌ No output received'); }, 500);
+                } catch(e) {
+                    console.error('❌ ' + endpoint + ' parse error:', e, '| Raw:', r.responseText);
+                    isRunning = false;
+                    sendToAI('❌ Parse error from ' + endpoint);
+                }
+            },
+            onerror: function() {
+                isRunning = false;
+                sendToAI('❌ ' + endpoint + ' request failed');
+            }
+        });
+    }
+
+    function appendFile(path, content)  { callEndpoint('/append', {path, content}); }
+    function deletePath(path, recur)    { callEndpoint('/delete', {path, recursive: recur}); }
+    function movePath(src, dst)         { callEndpoint('/move',   {src, dst}); }
+    function copyPath(src, dst)         { callEndpoint('/copy',   {src, dst}); }
+    function listDir(path)              { callEndpoint('/list',   {path}); }
+    function makeDir(path)              { callEndpoint('/mkdir',  {path}); }
+    function fileInfo(path)             { callEndpoint('/info',   {path}); }
+    function findFile(root, pattern)    { callEndpoint('/find',   {root, pattern}); }
+    function grepFile(pattern, path)    { callEndpoint('/grep',   {pattern, path}); }
+    function headFile(path, n)          { callEndpoint('/head',   {path, n}); }
+    function tailFile(path, n)          { callEndpoint('/tail',   {path, n}); }
+
     // ── Run Command ───────────────────────────────────────────────────────────
     function runCommand(cmd) {
         isRunning    = true;
@@ -669,6 +707,65 @@
             let readMatch = text.match(/^READ_FILE:\s*(.+)$/m);
             if (readMatch) return {type: 'read', path: readMatch[1].trim(), fp: text};
 
+            let appendMatch = text.match(/WRITE_FILE:\s*(.+?)\nAPPEND_MODE\s*\n<{1,3}\n([\s\S]*?)\n>{1,3}\s*(?:$|\n)/);
+            if (!appendMatch) appendMatch = text.match(/^APPEND_FILE:\s*(.+?)\n<{1,3}\n([\s\S]*?)\n>{1,3}\s*(?:$|\n)/m);
+            if (appendMatch) {
+                return {type: 'append', path: appendMatch[1].trim(), content: appendMatch[2], fp: text};
+            }
+
+            let deleteDirMatch = text.match(/^DELETE_DIR:\s*(.+)$/m);
+            if (deleteDirMatch) return {type: 'delete', path: deleteDirMatch[1].trim(), recursive: true, fp: text};
+
+            let deleteFileMatch = text.match(/^DELETE_FILE:\s*(.+)$/m);
+            if (deleteFileMatch) return {type: 'delete', path: deleteFileMatch[1].trim(), recursive: false, fp: text};
+
+            let moveMatch = text.match(/^MOVE_FILE:\s*(.+?)\s*(?:->|=>|→)\s*(.+)$/m);
+            if (!moveMatch) moveMatch = text.match(/^MOVE_FILE:\s*(.+?)\n(?:TO|DST|DESTINATION):\s*(.+)$/m);
+            if (moveMatch) return {type: 'move', src: moveMatch[1].trim(), dst: moveMatch[2].trim(), fp: text};
+
+            let copyMatch = text.match(/^COPY_FILE:\s*(.+?)\s*(?:->|=>|→)\s*(.+)$/m);
+            if (!copyMatch) copyMatch = text.match(/^COPY_FILE:\s*(.+?)\n(?:TO|DST|DESTINATION):\s*(.+)$/m);
+            if (copyMatch) return {type: 'copy', src: copyMatch[1].trim(), dst: copyMatch[2].trim(), fp: text};
+
+            let listMatch = text.match(/^LIST_DIR:\s*(.+)$/m);
+            if (listMatch) return {type: 'list', path: listMatch[1].trim(), fp: text};
+
+            let mkdirMatch = text.match(/^MAKE_DIR:\s*(.+)$/m);
+            if (mkdirMatch) return {type: 'mkdir', path: mkdirMatch[1].trim(), fp: text};
+
+            let infoMatch = text.match(/^FILE_INFO:\s*(.+)$/m);
+            if (infoMatch) return {type: 'info', path: infoMatch[1].trim(), fp: text};
+
+            let findMatch = text.match(/^FIND_FILE:\s*(.+?)\s*\|\s*(.+)$/m);
+            if (!findMatch) findMatch = text.match(/^FIND_FILE:\s*(.+)$/m);
+            if (findMatch) {
+                if (findMatch[2]) {
+                    return {type: 'find', root: findMatch[1].trim(), pattern: findMatch[2].trim(), fp: text};
+                } else {
+                    return {type: 'find', root: '.', pattern: findMatch[1].trim(), fp: text};
+                }
+            }
+
+            let grepMatch = text.match(/^GREP:\s*(.+?)\s*\|\s*(.+)$/m);
+            if (!grepMatch) grepMatch = text.match(/^GREP:\s*(.+)$/m);
+            if (grepMatch) {
+                if (grepMatch[2]) {
+                    return {type: 'grep', pattern: grepMatch[1].trim(), path: grepMatch[2].trim(), fp: text};
+                } else {
+                    return {type: 'grep', pattern: grepMatch[1].trim(), path: '.', fp: text};
+                }
+            }
+
+            let headMatch = text.match(/^HEAD:\s*(.+?)(?:\s*\|\s*(?:N\s*=\s*)?(\d+))?$/m);
+            if (headMatch) {
+                return {type: 'head', path: headMatch[1].trim(), n: headMatch[2] ? parseInt(headMatch[2], 10) : 10, fp: text};
+            }
+
+            let tailMatch = text.match(/^TAIL:\s*(.+?)(?:\s*\|\s*(?:N\s*=\s*)?(\d+))?$/m);
+            if (tailMatch) {
+                return {type: 'tail', path: tailMatch[1].trim(), n: tailMatch[2] ? parseInt(tailMatch[2], 10) : 10, fp: text};
+            }
+
             let editMatch = text.match(
                 /EDIT_FILE:\s*(.+?)\nOLD_STR\s*\n<{1,3}\n([\s\S]*?)\n>{1,3}\s*\nNEW_STR\s*\n<{1,3}\n([\s\S]*?)\n>{1,3}\s*(?:$|\n)/
             );
@@ -782,10 +879,21 @@
         execCounter++;
         console.log(`🚀 [msg:${msgCount} exec:#${execCounter}] Action: ${action.type}`, action);
 
-        if (action.type === 'cmd')   runCommand(action.cmd);
-        if (action.type === 'read')  readFile(action.path);
-        if (action.type === 'edit')  editFile(action.path, action.oldStr, action.newStr);
-        if (action.type === 'write') writeFile(action.path, action.content);
+        if (action.type === 'cmd')    runCommand(action.cmd);
+        if (action.type === 'read')   readFile(action.path);
+        if (action.type === 'edit')   editFile(action.path, action.oldStr, action.newStr);
+        if (action.type === 'write')  writeFile(action.path, action.content);
+        if (action.type === 'append') appendFile(action.path, action.content);
+        if (action.type === 'delete') deletePath(action.path, action.recursive);
+        if (action.type === 'move')   movePath(action.src, action.dst);
+        if (action.type === 'copy')   copyPath(action.src, action.dst);
+        if (action.type === 'list')   listDir(action.path);
+        if (action.type === 'mkdir')  makeDir(action.path);
+        if (action.type === 'info')   fileInfo(action.path);
+        if (action.type === 'find')   findFile(action.root, action.pattern);
+        if (action.type === 'grep')   grepFile(action.pattern, action.path);
+        if (action.type === 'head')   headFile(action.path, action.n);
+        if (action.type === 'tail')   tailFile(action.path, action.n);
     }, 600);
 
     console.log(`✅ Termux Agent v17.0 loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
