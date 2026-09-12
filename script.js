@@ -135,7 +135,6 @@
     // ── Claude sender ─────────────────────────────────────────────────────────
     function sendToClaude(output) {
         let editor = document.querySelector('.ProseMirror');
-        if (editor) { editor.blur(); editor.setAttribute('contenteditable', 'false'); }
         if (!editor) {
             console.error('❌ Claude ProseMirror editor nahi mila. Page reload karo.');
             isRunning = false;
@@ -156,7 +155,6 @@
             if (sendBtn) {
                 sendBtn.click();
                 console.log('✅ Claude ko send kiya!');
-                setTimeout(() => { if (editor) editor.setAttribute('contenteditable', 'true'); }, 3000);
             } else {
                 console.log('❌ Claude send button nahi mila');
                 isRunning = false;
