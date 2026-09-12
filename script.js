@@ -65,7 +65,7 @@
         let color = status === 'running' ? '#00ff88' : status === 'done' ? '#00ff88' : '#ff4444';
         pillEl.style.borderColor = color;
         pillEl.style.color = color;
-        pillEl.innerHTML = `${icon} <span style="opacity:0.6">#${cmdCount}</span> <span style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${cmd}</span>`;
+        pillEl.innerHTML = `${icon} <span style="opacity:0.6;flex-shrink:0">#${cmdCount}</span> <span style="overflow-x:auto;white-space:nowrap;max-width:60vw;display:inline-block;vertical-align:middle;">${cmd}</span>`;
     }
 
     let hideTimer = null;
