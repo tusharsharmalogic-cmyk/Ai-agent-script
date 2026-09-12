@@ -573,7 +573,12 @@
             lastPre = codeBlocks[codeBlocks.length - 1];
             preText = (lastPre.textContent || lastPre.innerText).trim();
         } else {
-            return;
+            // DeepSeek — pre blocks use karta hai
+            let deepPres = el.querySelectorAll('pre');
+            if (!deepPres.length) return;
+            lastPre = deepPres[deepPres.length - 1];
+            let codeEl = lastPre.querySelector('code');
+            preText = (codeEl ? codeEl.textContent : lastPre.innerText || lastPre.textContent).trim();
         }
 
         if (!preText) return;
