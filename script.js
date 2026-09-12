@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Termux AI Agent+ (DeepSeek + Claude + ChatGPT)
 // @namespace    termux-agent
-// @version      16.0
+// @version      17.0
 // @match        *://chat.deepseek.com/*
 // @match        *://claude.ai/*
 // @match        *://gemini.google.com/*
@@ -33,6 +33,151 @@
         HTMLTextAreaElement.prototype, 'value'
     ).set;
 
+    // ── Input UI Overlay ──────────────────────────────────────────────────────
+    const OVERLAY_ID = 'termux-agent-input-overlay';
+
+    function showInputOverlay(context) {
+        // Purana overlay hata do agar hai
+        let existing = document.getElementById(OVERLAY_ID);
+        if (existing) existing.remove();
+
+        let overlay = document.createElement('div');
+        overlay.id = OVERLAY_ID;
+        overlay.style.cssText = `
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.6);
+            z-index: 999999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: monospace;
+        `;
+
+        let box = document.createElement('div');
+        box.style.cssText = `
+            background: #1e1e2e;
+            border: 1.5px solid #444;
+            border-radius: 10px;
+            padding: 24px 28px;
+            min-width: 340px;
+            max-width: 90vw;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+            color: #cdd6f4;
+        `;
+
+        let title = document.createElement('div');
+        title.textContent = '⌨️ Terminal Input Required';
+        title.style.cssText = 'font-size:14px; font-weight:bold; margin-bottom:12px; color:#cba6f7;';
+
+        let ctx = document.createElement('div');
+        ctx.textContent = context || 'Program waiting for input...';
+        ctx.style.cssText = `
+            background: #181825;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 13px;
+            color: #a6e3a1;
+            margin-bottom: 16px;
+            word-break: break-all;
+            max-height: 80px;
+            overflow-y: auto;
+        `;
+
+        let input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = 'Type your response...';
+        input.style.cssText = `
+            width: 100%;
+            box-sizing: border-box;
+            background: #181825;
+            border: 1px solid #555;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 14px;
+            color: #cdd6f4;
+            outline: none;
+            margin-bottom: 14px;
+        `;
+
+        let btnRow = document.createElement('div');
+        btnRow.style.cssText = 'display:flex; gap:10px; justify-content:flex-end;';
+
+        let cancelBtn = document.createElement('button');
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.style.cssText = `
+            background: #313244;
+            color: #cdd6f4;
+            border: none;
+            border-radius: 6px;
+            padding: 7px 18px;
+            cursor: pointer;
+            font-size: 13px;
+        `;
+
+        let sendBtn = document.createElement('button');
+        sendBtn.textContent = 'Send ↵';
+        sendBtn.style.cssText = `
+            background: #cba6f7;
+            color: #1e1e2e;
+            border: none;
+            border-radius: 6px;
+            padding: 7px 18px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: bold;
+        `;
+
+        function submitInput() {
+            let val = input.value;
+            overlay.remove();
+            inputPending = false;
+            sendInputToServer(val);
+        }
+
+        function cancelInput() {
+            overlay.remove();
+            inputPending = false;
+            sendInputToServer('');  // empty → server side timeout handle karega
+        }
+
+        sendBtn.onclick = submitInput;
+        cancelBtn.onclick = cancelInput;
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') submitInput();
+            if (e.key === 'Escape') cancelInput();
+        });
+
+        btnRow.appendChild(cancelBtn);
+        btnRow.appendChild(sendBtn);
+        box.appendChild(title);
+        box.appendChild(ctx);
+        box.appendChild(input);
+        box.appendChild(btnRow);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+
+        // Auto-focus input
+        setTimeout(() => input.focus(), 50);
+    }
+
+    function sendInputToServer(value) {
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: 'http://localhost:5000/input',
+            headers: {'Content-Type': 'application/json'},
+            data: JSON.stringify({value: value}),
+            onload: function(r) {
+                console.log('✅ Input sent to server:', value);
+            },
+            onerror: function() {
+                console.error('❌ Input send failed');
+                isRunning = false;
+                sendToAI('❌ Input server tak nahi pahuncha.');
+            }
+        });
+    }
+
     // ── Polling ───────────────────────────────────────────────────────────────
     function startPolling() {
         if (pollInterval) return;
@@ -47,8 +192,7 @@
 
                         if (data.input_needed && !inputPending) {
                             inputPending = true;
-                            // Input popup removed — just log to console
-                            console.warn('⌨️ Input needed:', data.input_context);
+                            showInputOverlay(data.input_context);
                         }
 
                         if (data.done) {
@@ -287,6 +431,32 @@
         }, 1000);
     }
 
+    // ── Read File ─────────────────────────────────────────────────────────────
+    function readFile(path) {
+        isRunning = true;
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: 'http://localhost:5000/read',
+            headers: {'Content-Type': 'application/json'},
+            data: JSON.stringify({path: path}),
+            onload: function(r) {
+                try {
+                    let data = JSON.parse(r.responseText);
+                    isRunning = false;
+                    setTimeout(() => { sendToAI(data.output || '❌ No output received'); }, 500);
+                } catch(e) {
+                    console.error('❌ Read parse error:', e, '| Raw:', r.responseText);
+                    isRunning = false;
+                    sendToAI('❌ Read parse error');
+                }
+            },
+            onerror: function() {
+                isRunning = false;
+                sendToAI('❌ Read request failed');
+            }
+        });
+    }
+
     // ── Edit File ─────────────────────────────────────────────────────────────
     function editFile(path, oldStr, newStr) {
         isRunning = true;
@@ -494,6 +664,9 @@
 
             text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
+            let readMatch = text.match(/^READ_FILE:\s*(.+)$/m);
+            if (readMatch) return {type: 'read', path: readMatch[1].trim(), fp: text};
+
             let editMatch = text.match(
                 /EDIT_FILE:\s*(.+?)\nOLD_STR\s*\n<{1,3}\n([\s\S]*?)\n>{1,3}\s*\nNEW_STR\s*\n<{1,3}\n([\s\S]*?)\n>{1,3}\s*(?:$|\n)/
             );
@@ -608,10 +781,11 @@
         console.log(`🚀 [msg:${msgCount} exec:#${execCounter}] Action: ${action.type}`, action);
 
         if (action.type === 'cmd')   runCommand(action.cmd);
+        if (action.type === 'read')  readFile(action.path);
         if (action.type === 'edit')  editFile(action.path, action.oldStr, action.newStr);
         if (action.type === 'write') writeFile(action.path, action.content);
     }, 600);
 
-    console.log(`✅ Termux Agent v16.1 loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
+    console.log(`✅ Termux Agent v17.0 loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
 
 })();

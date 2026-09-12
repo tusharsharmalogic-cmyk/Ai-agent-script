@@ -397,6 +397,56 @@ def write_file():
     print(f"📝 WRITE: {path} ({lines} lines)")
     return jsonify({"status": "ok", "output": f"✅ Written: {path} ({lines} lines)"})
 
+@app.route('/read', methods=['POST'])
+def read_file():
+    """File ka content directly return karo — cat se faster, no shell round-trip."""
+    data = request.json
+    path = data.get('path', '').strip()
+
+    if not path:
+        return jsonify({"status": "error", "output": "❌ path missing"})
+
+    if not os.path.isabs(path):
+        path = os.path.join(get_cwd(), path)
+
+    if not os.path.exists(path):
+        return jsonify({"status": "error", "output": f"❌ File not found: {path}"})
+
+    if os.path.isdir(path):
+        try:
+            entries = os.listdir(path)
+            entries.sort()
+            listing = '\n'.join(entries)
+            return jsonify({"status": "ok", "output": f"📂 {path}/\n{listing}"})
+        except Exception as e:
+            return jsonify({"status": "error", "output": f"❌ Dir read error: {e}"})
+
+    try:
+        size = os.path.getsize(path)
+        if size > 500_000:
+            return jsonify({"status": "error", "output": f"❌ File too large ({size} bytes). RUN_CMD: head -n 100 {path} use karo."})
+        content = open(path, 'r', encoding='utf-8', errors='replace').read()
+        lines = content.count('\n')
+        print(f"📖 READ: {path} ({lines} lines)")
+        return jsonify({"status": "ok", "output": f"📄 {path} ({lines} lines):\n\n{content}"})
+    except Exception as e:
+        return jsonify({"status": "error", "output": f"❌ Read error: {e}"})
+
+
+@app.route('/status', methods=['GET'])
+def status():
+    """Server alive check + current state."""
+    with session_lock:
+        running = session['running']
+        input_needed = session['input_needed']
+    return jsonify({
+        "status": "ok",
+        "cwd": get_cwd(),
+        "running": running,
+        "input_needed": input_needed
+    })
+
+
 if __name__ == '__main__':
     print("╔══════════════════════════════════════════╗")
     print("║     🤖  Termux AI Agent Server           ║")
