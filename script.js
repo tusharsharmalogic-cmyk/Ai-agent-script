@@ -68,9 +68,11 @@
         pillEl.innerHTML = `${icon} <span style="opacity:0.6">#${cmdCount}</span> <span style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${cmd}</span>`;
     }
 
+    let hideTimer = null;
     function hidePill() {
         if (!pillEl) return;
-        setTimeout(() => {
+        if (hideTimer) clearTimeout(hideTimer);
+        hideTimer = setTimeout(() => {
             if (pillEl) {
                 pillEl.style.opacity = '0';
                 setTimeout(() => { if (pillEl) pillEl.style.display = 'none'; }, 300);
@@ -350,7 +352,7 @@
                 try {
                     let data = JSON.parse(r.responseText);
                     isRunning = false;
-                    showPill("✏️ done", "done"); hidePill();
+                    showPill("✅ Edit done", "done"); hidePill();
                     setTimeout(() => { sendToAI(data.output || '❌ No output received'); }, 500);
                 } catch(e) {
                     console.error('❌ Edit parse error:', e, '| Raw:', r.responseText);
@@ -380,7 +382,7 @@
                 try {
                     let data = JSON.parse(r.responseText);
                     isRunning = false;
-                    showPill("📝 done", "done"); hidePill();
+                    showPill("✅ Write done", "done"); hidePill();
                     setTimeout(() => { sendToAI(data.output || '❌ No output received'); }, 500);
                 } catch(e) {
                     console.error('❌ Write parse error:', e, '| Raw:', r.responseText);
@@ -417,7 +419,7 @@
                     } else {
                         if (runTimeout) { clearTimeout(runTimeout); runTimeout = null; }
                         isRunning = false;
-                        showPill(cmd, 'done'); hidePill();
+                        showPill("✅ " + cmd, "done"); hidePill();
                         sendToAI(data.output || '❌ Error');
                     }
                 } catch(e) {
