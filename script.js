@@ -154,7 +154,6 @@
         setTimeout(() => {
             let sendBtn = document.querySelector('button[aria-label="Send message"]');
             if (sendBtn) {
-                if (editor) editor.setAttribute('contenteditable', 'true');
                 sendBtn.click();
                 console.log('✅ Claude ko send kiya!');
             } else {
