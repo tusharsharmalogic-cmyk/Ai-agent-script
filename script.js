@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Termux AI Agent+ (DeepSeek + Claude + ChatGPT)
 // @namespace    termux-agent
-// @version      16.0
+// @version      16.3
 // @match        *://chat.deepseek.com/*
 // @match        *://claude.ai/*
 // @match        *://gemini.google.com/*
@@ -28,6 +28,55 @@
     let inputPending   = false;
     let runTimeout     = null;
     let execCounter    = 0;
+
+    // ── Status Pill ──────────────────────────────────────────────────────────
+    let pillEl = null;
+    let cmdCount = 0;
+
+    function showPill(cmd, status) {
+        if (!pillEl) {
+            pillEl = document.createElement('div');
+            pillEl.id = 'termux-pill';
+            pillEl.style.cssText = `
+                position: fixed;
+                top: 10px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: rgba(13,17,23,0.92);
+                color: #00ff88;
+                font-family: monospace;
+                font-size: 12px;
+                padding: 6px 16px;
+                border-radius: 999px;
+                border: 1px solid #00ff88;
+                z-index: 999999;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                backdrop-filter: blur(6px);
+                box-shadow: 0 2px 12px rgba(0,255,136,0.15);
+                transition: opacity 0.3s ease;
+            `;
+            document.body.appendChild(pillEl);
+        }
+        pillEl.style.opacity = '1';
+        pillEl.style.display = 'flex';
+        let icon = status === 'running' ? '⚡' : status === 'done' ? '✅' : '❌';
+        let color = status === 'running' ? '#00ff88' : status === 'done' ? '#00ff88' : '#ff4444';
+        pillEl.style.borderColor = color;
+        pillEl.style.color = color;
+        pillEl.innerHTML = `${icon} <span style="opacity:0.6">#${cmdCount}</span> <span style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${cmd}</span>`;
+    }
+
+    function hidePill() {
+        if (!pillEl) return;
+        setTimeout(() => {
+            if (pillEl) {
+                pillEl.style.opacity = '0';
+                setTimeout(() => { if (pillEl) pillEl.style.display = 'none'; }, 300);
+            }
+        }, 2000);
+    }
 
     const valueSetter = Object.getOwnPropertyDescriptor(
         HTMLTextAreaElement.prototype, 'value'
@@ -289,6 +338,8 @@
 
     // ── Edit File ─────────────────────────────────────────────────────────────
     function editFile(path, oldStr, newStr) {
+        cmdCount++;
+        showPill("✏️ " + path, "running");
         isRunning = true;
         GM_xmlhttpRequest({
             method: 'POST',
@@ -299,10 +350,12 @@
                 try {
                     let data = JSON.parse(r.responseText);
                     isRunning = false;
+                    showPill("✏️ done", "done"); hidePill();
                     setTimeout(() => { sendToAI(data.output || '❌ No output received'); }, 500);
                 } catch(e) {
                     console.error('❌ Edit parse error:', e, '| Raw:', r.responseText);
                     isRunning = false;
+                    showPill("✏️ error", "error"); hidePill();
                     sendToAI('❌ Edit parse error');
                 }
             },
@@ -315,6 +368,8 @@
 
     // ── Write File ────────────────────────────────────────────────────────────
     function writeFile(path, content) {
+        cmdCount++;
+        showPill("📝 " + path, "running");
         isRunning = true;
         GM_xmlhttpRequest({
             method: 'POST',
@@ -325,10 +380,12 @@
                 try {
                     let data = JSON.parse(r.responseText);
                     isRunning = false;
+                    showPill("📝 done", "done"); hidePill();
                     setTimeout(() => { sendToAI(data.output || '❌ No output received'); }, 500);
                 } catch(e) {
                     console.error('❌ Write parse error:', e, '| Raw:', r.responseText);
                     isRunning = false;
+                    showPill("📝 error", "error"); hidePill();
                     sendToAI('❌ Write parse error');
                 }
             },
@@ -341,6 +398,8 @@
 
     // ── Run Command ───────────────────────────────────────────────────────────
     function runCommand(cmd) {
+        cmdCount++;
+        showPill(cmd, 'running');
         isRunning    = true;
         inputPending = false;
         if (runTimeout) { clearTimeout(runTimeout); runTimeout = null; }
@@ -358,6 +417,7 @@
                     } else {
                         if (runTimeout) { clearTimeout(runTimeout); runTimeout = null; }
                         isRunning = false;
+                        showPill(cmd, 'done'); hidePill();
                         sendToAI(data.output || '❌ Error');
                     }
                 } catch(e) {
@@ -607,6 +667,6 @@
         if (action.type === 'write') writeFile(action.path, action.content);
     }, 600);
 
-    console.log(`✅ Termux Agent v16.1 loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
+    console.log(`✅ Termux Agent v16.3 loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
 
 })();
