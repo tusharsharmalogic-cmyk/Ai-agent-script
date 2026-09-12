@@ -49,9 +49,10 @@
             background: rgba(0,0,0,0.6);
             z-index: 999999;
             display: flex;
-            align-items: center;
+            align-items: flex-start;
             justify-content: center;
             font-family: monospace;
+            padding-top: 12px;
         `;
 
         let box = document.createElement('div');
@@ -59,9 +60,10 @@
             background: #1e1e2e;
             border: 1.5px solid #444;
             border-radius: 10px;
-            padding: 24px 28px;
-            min-width: 340px;
-            max-width: 90vw;
+            padding: 18px 16px;
+            width: 96vw;
+            max-width: 480px;
+            box-sizing: border-box;
             box-shadow: 0 8px 32px rgba(0,0,0,0.5);
             color: #cdd6f4;
         `;
