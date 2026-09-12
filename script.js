@@ -505,11 +505,11 @@
                 return {type: 'write', path: writeMatch[1].trim(), content: writeMatch[2], fp: text};
             }
 
-            let multiMatch = text.match(/RUN_CMD_START\s*\n([\s\S]*?)\nRUN_CMD_END/);
+            let multiMatch = text.match(/^RUN_CMD_START\s*\n([\s\S]*?)\nRUN_CMD_END\s*$/m);
             if (multiMatch) return {type: 'cmd', cmd: multiMatch[1].trim(), fp: text};
 
-            let match = text.match(/RUN_CMD:\s*(.+)/);
-            if (match) return {type: 'cmd', cmd: match[1].trim(), fp: text};
+            let match = text.match(/^RUN_CMD:\s*(.+)$/m);
+            if (match && text.trim().split('\n').length <= 3) return {type: 'cmd', cmd: match[1].trim(), fp: text};
         }
         return null;
     }
