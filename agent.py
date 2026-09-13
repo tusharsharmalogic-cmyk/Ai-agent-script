@@ -69,6 +69,7 @@ session = {
     'pid': None,             # current process pid (for /kill)
     'start_time': 0,         # epoch when command started
     'killed_by_user': False, # set True by /kill endpoint
+    'cancel_event': None,    # threading.Event for pure-python tasks (downloads)
 }
 
 # FIX C: session fields ko thread-safe banane ke liye lock
@@ -406,12 +407,22 @@ def kill_running():
         pid = session.get('pid')
         session['killed_by_user'] = True
         print(f"🛑 KILL requested for pid={pid}")
+    # 1) Subprocess ho to usko SIGKILL karo
     if pid:
         try:
             os.killpg(os.getpgid(pid), signal.SIGKILL)
+            print(f"🛑 SIGKILL sent to pid {pid}")
         except Exception as e:
             print(f"⚠️ kill error: {e}")
-    # Agar command input-prompt pe wait kar rahi hai to wait() ko unblock karo
+    # 2) Pure-python task (download) ho to uska cancel Event set karo
+    ev = session.get('cancel_event')
+    if ev is not None:
+        try:
+            ev.set()
+            print("🛑 cancel_event set for python task")
+        except Exception as e:
+            print(f"⚠️ cancel_event set fail: {e}")
+    # 3) Agar input wait me hai to uska event bhi set karo
     try:
         session['input_value']  = None
         session['input_needed'] = False
@@ -1120,6 +1131,9 @@ def download_endpoint():
         session['pid']            = None
         session['start_time']     = time.time()
         session['killed_by_user'] = False
+        session['cancel_event']   = threading.Event()
+
+    cancel_ev = session['cancel_event']
 
     def _progress(done, total):
         if total > 0:
@@ -1135,20 +1149,22 @@ def download_endpoint():
             result = web_search.download(
                 url=url, dest=path, overwrite=overwrite,
                 progress_cb=_progress,
+                cancel_check=cancel_ev.is_set,
             )
         except Exception as e:
             result = {'status': 'error', 'message': f'❌ Exception: {e}'}
 
         with session_lock:
             killed = session.get('killed_by_user', False)
-            if killed:
-                final = '🛑 User ne Kill button dabaya — download band kar di.'
+            if killed or result.get('cancelled'):
+                final = result.get('message') or '🛑 User ne Kill button dabaya — download band kar di.'
             else:
                 final = result.get('message', 'done')
             session['chunks'].append('\n' + final + '\n')
             session['final_output'] = final
             session['done']         = True
             session['running']      = False
+            session['cancel_event'] = None
 
     threading.Thread(target=_worker, daemon=True).start()
     return jsonify({"status": "started"})

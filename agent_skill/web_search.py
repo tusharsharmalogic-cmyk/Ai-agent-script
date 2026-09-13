@@ -152,12 +152,14 @@ UA = ('Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36')
 
 
-def download(url, dest, overwrite=False, progress_cb=None, timeout=60):
+def download(url, dest, overwrite=False, progress_cb=None, timeout=60,
+             cancel_check=None):
     """
     Stream-download a URL to dest with live progress.
 
     progress_cb(bytes_done, total_bytes_or_0) is called periodically.
-    Returns dict: {status, path, size, message, error}.
+    cancel_check() -> True aborts the download (used by /kill).
+    Returns dict: {status, path, size, message, error, cancelled}.
     """
     if not url.strip():
         return {'status': 'error', 'message': '❌ URL khali hai'}
@@ -178,10 +180,15 @@ def download(url, dest, overwrite=False, progress_cb=None, timeout=60):
             total = int(r.headers.get('Content-Length') or 0)
             done  = 0
             last_report = 0
+            cancelled = False
             with open(dest, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=32 * 1024):
                     if not chunk:
                         continue
+                    # /kill ne cancel set kiya? -> abort
+                    if cancel_check and cancel_check():
+                        cancelled = True
+                        break
                     f.write(chunk)
                     done += len(chunk)
                     if progress_cb:
@@ -189,6 +196,17 @@ def download(url, dest, overwrite=False, progress_cb=None, timeout=60):
                         if done - last_report >= 64 * 1024:
                             progress_cb(done, total)
                             last_report = done
+            if cancelled:
+                # Partial file cleanup — user ne cancel kiya
+                try:
+                    os.remove(dest)
+                except Exception:
+                    pass
+                return {'status': 'cancelled',
+                        'path': dest,
+                        'size': 0,
+                        'cancelled': True,
+                        'message': f'🛑 Download cancelled by user ({done} bytes received, partial file deleted).'}
             if progress_cb:
                 progress_cb(done, total)
 
