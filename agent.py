@@ -65,10 +65,12 @@ def strip_ansi(text):
         r'\x1b[@-Z\\-_]',                       # single-char ESC seqs
         r'\\033\[[0-9;]*[a-zA-Z]',             # literal \033[0m etc (echo -e fallback)
         r'\x07',                                # BEL
-        r'\r',                                  # CR (progress bars overwrite)
     ]
     for p in patterns:
         text = re.sub(p, '', text)
+    # CR (\r) ko newline banao — progress bars / spinners jo ek hi line
+    # pe overwrite karte hain, wo terminal box me alag-alag lines ban jayenge.
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
     return text
 
 def clean_output(text):
