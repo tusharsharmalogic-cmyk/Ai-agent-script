@@ -173,9 +173,14 @@ def run_cmd_thread(raw_cmd):
             session['chunks'].append(clean)
 
         # Input detect — 2 layer approach
+        # bash's `read -p` prints the prompt WITHOUT a trailing newline,
+        # so the prompt often shares a chunk with previous menu output.
+        # Check the LAST LINE only, not the whole chunk.
         stripped = clean.strip()
-        lower    = stripped.lower()
-        is_short_line = len(stripped.splitlines()) == 1 and len(stripped) < 200
+        _lines_now = stripped.splitlines() if stripped else []
+        last_line  = _lines_now[-1].strip() if _lines_now else ''
+        lower    = last_line.lower()
+        is_short_line = 0 < len(last_line) < 200
 
         # Layer 1: Known strong patterns — turant trigger
         known_prompt = is_short_line and (
@@ -198,7 +203,7 @@ def run_cmd_thread(raw_cmd):
         # Layer 2: Generic — colon/? se end hone wala short line
         # 400ms silence check — confirm karo process block hai
         generic_prompt = is_short_line and not known_prompt and (
-            bool(re.search(r'[:\?]\s*$', stripped))
+            bool(re.search(r'[:\?]\s*$', last_line))
         )
 
         needs_input = known_prompt or generic_prompt
@@ -215,7 +220,7 @@ def run_cmd_thread(raw_cmd):
         if needs_input and proc.poll() is None:
             with session_lock:
                 session['input_needed']  = True
-                session['input_context'] = clean.strip()
+                session['input_context'] = last_line
                 session['input_event'].clear()
 
             got_input = session['input_event'].wait(timeout=60)
