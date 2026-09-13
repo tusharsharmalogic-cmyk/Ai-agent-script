@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Termux AI Agent+ (DeepSeek + Claude + ChatGPT)
 // @namespace    termux-agent
-// @version      17.0
+// @version      17.1
 // @match        *://chat.deepseek.com/*
 // @match        *://claude.ai/*
 // @match        *://gemini.google.com/*
@@ -28,6 +28,9 @@
     let inputPending   = false;
     let runTimeout     = null;
     let execCounter    = 0;
+    let termOverlay    = null;   // live terminal box (shown after 10s)
+    let termShownAt    = 0;
+    let lastTermChunk  = '';
 
     const valueSetter = Object.getOwnPropertyDescriptor(
         HTMLTextAreaElement.prototype, 'value'
@@ -180,6 +183,144 @@
         });
     }
 
+    // ── Live Terminal Overlay ─────────────────────────────────────────────────
+    const TERM_ID = 'termux-agent-terminal-overlay';
+
+    function showTerminalOverlay() {
+        if (document.getElementById(TERM_ID)) return;
+
+        let ov = document.createElement('div');
+        ov.id = TERM_ID;
+        ov.style.cssText = `
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.65);
+            z-index: 999998;
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            font-family: monospace;
+            padding: 10px 8px;
+        `;
+
+        let box = document.createElement('div');
+        box.style.cssText = `
+            background: #11111b;
+            border: 1.5px solid #f38ba8;
+            border-radius: 10px;
+            width: 96vw;
+            max-width: 640px;
+            box-sizing: border-box;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+            color: #cdd6f4;
+            display: flex;
+            flex-direction: column;
+            max-height: 70vh;
+            overflow: hidden;
+        `;
+
+        let hdr = document.createElement('div');
+        hdr.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#181825;border-bottom:1px solid #313244;';
+        let hLeft = document.createElement('div');
+        hLeft.textContent = '🖥️ Live Command';
+        hLeft.style.cssText = 'font-size:13px;font-weight:bold;color:#f38ba8;';
+        let hTimer = document.createElement('div');
+        hTimer.id = TERM_ID + '-timer';
+        hTimer.textContent = '0s';
+        hTimer.style.cssText = 'font-size:12px;color:#a6e3a1;font-weight:bold;';
+        hdr.appendChild(hLeft);
+        hdr.appendChild(hTimer);
+
+        let pre = document.createElement('pre');
+        pre.id = TERM_ID + '-out';
+        pre.style.cssText = `
+            margin: 0;
+            padding: 10px 12px;
+            font-size: 12px;
+            line-height: 1.35;
+            color: #a6e3a1;
+            background: #0b0b12;
+            white-space: pre-wrap;
+            word-break: break-all;
+            overflow-y: auto;
+            flex: 1;
+            min-height: 120px;
+            max-height: 55vh;
+        `;
+
+        let footer = document.createElement('div');
+        footer.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;padding:10px 12px;background:#181825;border-top:1px solid #313244;';
+
+        let killBtn = document.createElement('button');
+        killBtn.textContent = '🛑 Kill';
+        killBtn.style.cssText = `
+            background: #f38ba8;
+            color: #11111b;
+            border: none;
+            border-radius: 6px;
+            padding: 8px 22px;
+            font-size: 13px;
+            font-weight: bold;
+            cursor: pointer;
+        `;
+        killBtn.onclick = killRunningCommand;
+
+        footer.appendChild(killBtn);
+        box.appendChild(hdr);
+        box.appendChild(pre);
+        box.appendChild(footer);
+        ov.appendChild(box);
+        document.body.appendChild(ov);
+
+        termOverlay = ov;
+        termShownAt = Date.now();
+    }
+
+    function updateTerminalOverlay(chunks) {
+        if (!termOverlay) return;
+        let pre = document.getElementById(TERM_ID + '-out');
+        if (!pre) return;
+        for (let c of chunks) {
+            lastTermChunk += c;
+        }
+        // Keep last ~200 lines for perf
+        let lines = lastTermChunk.split('\n');
+        if (lines.length > 200) {
+            lines = lines.slice(lines.length - 200);
+            lastTermChunk = lines.join('\n');
+        }
+        pre.textContent = lastTermChunk;
+        pre.scrollTop = pre.scrollHeight;
+
+        let t = document.getElementById(TERM_ID + '-timer');
+        if (t) {
+            let sec = Math.floor((Date.now() - termShownAt) / 1000);
+            t.textContent = sec + 's';
+        }
+    }
+
+    function hideTerminalOverlay() {
+        if (termOverlay) { termOverlay.remove(); }
+        termOverlay = null;
+        termShownAt = 0;
+        lastTermChunk = '';
+    }
+
+    function killRunningCommand() {
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: 'http://localhost:5000/kill',
+            headers: {'Content-Type': 'application/json'},
+            data: '{}',
+            onload: function(r) {
+                console.log('🛑 Kill response:', r.responseText);
+            },
+            onerror: function() {
+                console.error('❌ Kill request failed');
+            }
+        });
+    }
+
     // ── Polling ───────────────────────────────────────────────────────────────
     function startPolling() {
         if (pollInterval) return;
@@ -192,6 +333,20 @@
                     try {
                         let data = JSON.parse(r.responseText);
 
+                        // Live chunks → feed to terminal overlay
+                        if (data.chunks && data.chunks.length) {
+                            updateTerminalOverlay(data.chunks);
+                        }
+
+                        // After 10s of running → auto-show terminal overlay
+                        if (data.running && !termOverlay && data.elapsed && data.elapsed > 10) {
+                            showTerminalOverlay();
+                            if (lastTermChunk) {
+                                let pre = document.getElementById(TERM_ID + '-out');
+                                if (pre) { pre.textContent = lastTermChunk; pre.scrollTop = pre.scrollHeight; }
+                            }
+                        }
+
                         if (data.input_needed && !inputPending) {
                             inputPending = true;
                             showInputOverlay(data.input_context);
@@ -202,6 +357,7 @@
                             pollInterval  = null;
                             inputPending  = false;
                             if (runTimeout) { clearTimeout(runTimeout); runTimeout = null; }
+                            hideTerminalOverlay();
                             sendToAI(data.final_output);
                         }
                     } catch(e) {
@@ -213,6 +369,7 @@
                     clearInterval(pollInterval);
                     pollInterval = null;
                     if (runTimeout) { clearTimeout(runTimeout); runTimeout = null; }
+                    hideTerminalOverlay();
                     isRunning = false;
                     sendToAI('❌ Server se connection toot gaya polling ke dauraan.');
                 }
@@ -554,6 +711,7 @@
     function runCommand(cmd) {
         isRunning    = true;
         inputPending = false;
+        hideTerminalOverlay();
         if (runTimeout) { clearTimeout(runTimeout); runTimeout = null; }
 
         GM_xmlhttpRequest({
@@ -585,15 +743,17 @@
             }
         });
 
+        // No client-side timeout — server runs until done or user kills.
+        // A 90s safety net remains in case the server becomes unresponsive,
+        // but it only fires if polling itself has already died.
         runTimeout = setTimeout(() => {
             runTimeout = null;
-            if (isRunning) {
-                if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
-                inputPending = false;
+            if (isRunning && !pollInterval) {
+                hideTerminalOverlay();
                 isRunning = false;
-                sendToAI('❌ Timeout: command 40s se zyada chal gayi (ya server ne done nahi bheja).');
+                sendToAI('❌ Server polling toot gaya — koi response nahi mila.');
             }
-        }, 40000);
+        }, 90000);
     }
 
     // ── AI Message Detection ──────────────────────────────────────────────────
@@ -910,6 +1070,6 @@
         if (action.type === 'pdf')    pdfCreate(action.spec);
     }, 600);
 
-    console.log(`✅ Termux Agent v17.0 loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
+    console.log(`✅ Termux Agent v17.1 loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
 
 })();

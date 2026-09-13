@@ -15,7 +15,9 @@ os.makedirs(LOG_DIR,   exist_ok=True)
 if not os.path.exists(CWD_FILE):
     open(CWD_FILE,'w').write(HOME)
 
-TIMEOUT   = 30
+# No hard timeout — commands run until they finish or user kills them.
+# (Input-prompt wait still has its own 60s timeout inside run_cmd_thread.)
+TIMEOUT   = None
 MAX_LINES = 300
 # FIX E: normalize ke baad compare — space variations se bypass nahi hoga
 BLACKLIST = [
@@ -39,6 +41,9 @@ session = {
     'input_context': '',
     'input_event': threading.Event(),
     'input_value': None,
+    'pid': None,             # current process pid (for /kill)
+    'start_time': 0,         # epoch when command started
+    'killed_by_user': False, # set True by /kill endpoint
 }
 
 # FIX C: session fields ko thread-safe banane ke liye lock
@@ -129,8 +134,15 @@ def run_cmd_thread(raw_cmd):
 
     start_time = time.time()
 
+    # Publish pid + start_time so /kill endpoint can find this process.
+    with session_lock:
+        session['pid']            = proc.pid
+        session['start_time']     = start_time
+        session['killed_by_user'] = False
+
     while True:
-        if time.time() - start_time > TIMEOUT:
+        # TIMEOUT is None -> run forever until process ends or user kills it.
+        if TIMEOUT is not None and (time.time() - start_time > TIMEOUT):
             timed_out = True
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -209,7 +221,11 @@ def run_cmd_thread(raw_cmd):
                 val = session['input_value']
                 session['input_value']  = None
                 session['input_needed'] = False
+                killed_during_wait = session.get('killed_by_user', False)
 
+            if killed_during_wait:
+                # User ne Kill dabaya input-wait ke dauraan — loop se bahar
+                break
             if got_input and val is not None:
                 try:
                     os.write(master_fd, (val + '\n').encode())
@@ -248,7 +264,16 @@ def run_cmd_thread(raw_cmd):
     exit_code = proc.returncode or 0
     full_output = clean_output(strip_ansi(''.join(output_lines)))
 
-    if not full_output.strip():
+    with session_lock:
+        killed_by_user = session.get('killed_by_user', False)
+
+    if killed_by_user:
+        partial = full_output.strip() if full_output.strip() else '(no output)'
+        final = (
+            "🛑 User ne Kill button dabaya — command band kar di.\n\n"
+            "[Partial output]\n" + smart_truncate(partial)
+        )
+    elif not full_output.strip():
         if timed_out:
             final = f'⏰ Timeout — killed after {TIMEOUT}s.'
         elif exit_code == 0:
@@ -292,14 +317,17 @@ def run():
             })
 
         # Session reset (lock ke andar — atomic)
-        session['running']       = True
-        session['chunks']        = [f'$ {cmd}\n']
-        session['done']          = False
-        session['final_output']  = ''
-        session['input_needed']  = False
-        session['input_context'] = ''
-        session['input_value']   = None
-        session['input_event']   = threading.Event()  # fresh event — purana set state clear
+        session['running']        = True
+        session['chunks']         = [f'$ {cmd}\n']
+        session['done']           = False
+        session['final_output']   = ''
+        session['input_needed']   = False
+        session['input_context']  = ''
+        session['input_value']    = None
+        session['input_event']    = threading.Event()  # fresh event
+        session['pid']            = None
+        session['start_time']     = 0
+        session['killed_by_user'] = False
 
     print(f"\n⚡ CMD: {cmd}\n📂 CWD: {get_cwd()}")
 
@@ -320,6 +348,8 @@ def poll():
             "final_output":  session['final_output'],
             "input_needed":  session['input_needed'],
             "input_context": session['input_context'],
+            "running":       session['running'],
+            "elapsed":       (time.time() - session['start_time']) if session['running'] and session['start_time'] else 0,
         }
     return jsonify(snapshot)
 
@@ -331,6 +361,29 @@ def send_input():
     session['input_event'].set()
     print(f"✏️ Input received: {session['input_value']}")
     return jsonify({"status": "ok"})
+
+@app.route('/kill', methods=['POST'])
+def kill_running():
+    """User ne terminal box ka Kill button dabaya — running process ko SIGKILL karo."""
+    with session_lock:
+        if not session['running']:
+            return jsonify({"status": "error", "output": "❌ Koi command nahi chal rahi"})
+        pid = session.get('pid')
+        session['killed_by_user'] = True
+        print(f"🛑 KILL requested for pid={pid}")
+    if pid:
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except Exception as e:
+            print(f"⚠️ kill error: {e}")
+    # Agar command input-prompt pe wait kar rahi hai to wait() ko unblock karo
+    try:
+        session['input_value']  = None
+        session['input_needed'] = False
+        session['input_event'].set()
+    except Exception:
+        pass
+    return jsonify({"status": "ok", "output": "🛑 Kill signal bhej diya"})
 
 @app.route('/edit', methods=['POST'])
 def edit_file():
@@ -964,7 +1017,8 @@ if __name__ == '__main__':
     print("║     🤖  Termux AI Agent Server           ║")
     print("╠══════════════════════════════════════════╣")
     print(f"║  CWD    : {get_cwd()[:30]:<30}║")
-    print(f"║  Timeout: {TIMEOUT}s  │  Max: {MAX_LINES} lines          ║")
+    tstr = f"{TIMEOUT}s" if TIMEOUT else "none (KILL)"
+    print(f"║  Timeout: {tstr:<32}║")
     print("╠══════════════════════════════════════════╣")
     print("║  HTTP  : localhost:5000                  ║")
     print("║  Poll  : localhost:5000/poll             ║")
