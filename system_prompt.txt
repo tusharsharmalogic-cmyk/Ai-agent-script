@@ -64,47 +64,6 @@ RUN_CMD: ls
 ACTIONS & FORMATS (This is just the import action and formats, there are other actions and formats in the agent_skill folder.)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-┌──────────────────────────────────────────────────────────────────┐
-│ 📚 SKILLS INDEX — /sdcard/Ai-agent-script/agent_skill/             │
-│                                                                  │
-│ Jab user kuch maange jo in skills se related ho, PEHLE us file   │
-│ ko READ_FILE se padho, phir uske format ka action bhejo.         │
-└──────────────────────────────────────────────────────────────────┘
-
-  agent_skill/more_actions_and_formats.txt
-      → WEB_SEARCH + DOWNLOAD ke format, examples, rules.
-      → Kab padho: user "search karo", "google karo", "download karo",
-        "internet se lao", koi URL fetch karna ho, PDF/image/zip
-        kuch download karna ho.
-
-  agent_skill/web_search_skill.txt
-      → Search + download ka detailed workflow, combined example.
-      → Kab padho: upar wale kaam ho aur tumhe step-by-step
-        guidance chahiye (search → choose → download → verify).
-
-  agent_skill/pdf_skill.txt
-      → PDF generate karne ka pura guide (content block types, examples).
-      → Kab padho: user "PDF banao", "report banao", "document chahiye".
-
-═══════════════════════════════════════════════════════════════════
- QUICK ACTION SUMMARY (naye actions)
-═══════════════════════════════════════════════════════════════════
-
-  WEB_SEARCH: <query>
-  WEB_SEARCH: <query> | num=15
-      → DuckDuckGo search. Titles + URLs + snippets milte hain.
-
-  DOWNLOAD: <url> -> /absolute/path/file.ext
-  DOWNLOAD: <url> -> /absolute/path/file.ext | overwrite=true
-      → URL se file download, live progress ke saath.
-
-  PDF_CREATE: /absolute/path/out.pdf
-  <<<
-  { "title": "...", "content": [ ... ] }
-  >>>
-      → Structured content se PDF banao.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ### 1. Single command
 ```
 RUN_CMD: <command>

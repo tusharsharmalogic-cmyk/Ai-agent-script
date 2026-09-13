@@ -1,32 +1,7 @@
 from flask import Flask, request, jsonify
 import subprocess, os, tempfile, threading, re, time, pty, select, signal
-import sys
 
 app = Flask(__name__)
-
-# ── Load web_search helper from agent_skill/ ────────────────────────────
-def _load_web_search():
-    import importlib.util
-    candidates = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'agent_skill'),
-        '/sdcard/Ai-agent-script/agent_skill',
-        os.path.join(get_cwd() if 'get_cwd' in globals() else os.getcwd(), 'agent_skill'),
-    ]
-    for d in candidates:
-        fpath = os.path.join(d, 'web_search.py')
-        if os.path.exists(fpath):
-            try:
-                spec = importlib.util.spec_from_file_location('web_search', fpath)
-                mod  = importlib.util.module_from_spec(spec)
-                sys.modules['web_search'] = mod
-                spec.loader.exec_module(mod)
-                print(f'🌐 web_search loaded from {fpath}')
-                return mod
-            except Exception as e:
-                print(f'⚠️ web_search load fail ({fpath}): {e}')
-    return None
-
-web_search = _load_web_search()
 
 HOME    = os.path.expanduser("~")
 TMPDIR  = os.environ.get('TMPDIR') or os.path.join(HOME, '.agent_tmp')
@@ -69,7 +44,6 @@ session = {
     'pid': None,             # current process pid (for /kill)
     'start_time': 0,         # epoch when command started
     'killed_by_user': False, # set True by /kill endpoint
-    'cancel_event': None,    # threading.Event for pure-python tasks (downloads)
 }
 
 # FIX C: session fields ko thread-safe banane ke liye lock
@@ -407,22 +381,12 @@ def kill_running():
         pid = session.get('pid')
         session['killed_by_user'] = True
         print(f"🛑 KILL requested for pid={pid}")
-    # 1) Subprocess ho to usko SIGKILL karo
     if pid:
         try:
             os.killpg(os.getpgid(pid), signal.SIGKILL)
-            print(f"🛑 SIGKILL sent to pid {pid}")
         except Exception as e:
             print(f"⚠️ kill error: {e}")
-    # 2) Pure-python task (download) ho to uska cancel Event set karo
-    ev = session.get('cancel_event')
-    if ev is not None:
-        try:
-            ev.set()
-            print("🛑 cancel_event set for python task")
-        except Exception as e:
-            print(f"⚠️ cancel_event set fail: {e}")
-    # 3) Agar input wait me hai to uska event bhi set karo
+    # Agar command input-prompt pe wait kar rahi hai to wait() ko unblock karo
     try:
         session['input_value']  = None
         session['input_needed'] = False
@@ -984,8 +948,6 @@ def generate_pdf():
         candidates = [
             os.path.dirname(os.path.abspath(__file__)),
             '/sdcard/Ai-agent-script',
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'agent_skill'),
-            '/sdcard/Ai-agent-script/agent_skill',
             get_cwd(),
         ]
         for d in candidates:
@@ -1058,116 +1020,6 @@ def generate_pdf():
             out += f"\n\n{tb}"
         print(f"❌ PDF failed: {msg}")
         return jsonify({"status": "error", "output": out})
-
-
-@app.route('/search', methods=['POST'])
-def web_search_endpoint():
-    """
-    DuckDuckGo search.
-    Body: {"query": "...", "num": 10}
-    """
-    if web_search is None:
-        return jsonify({"status": "error",
-                        "output": "❌ web_search module load nahi hua — agent_skill/web_search.py check karo"})
-
-    data  = request.json or {}
-    query = (data.get('query') or '').strip()
-    num   = int(data.get('num', 10))
-
-    if not query:
-        return jsonify({"status": "error", "output": "❌ query missing"})
-
-    results, err = web_search.search(query, num=num)
-    if err:
-        return jsonify({"status": "error", "output": err})
-
-    out = [f"🔍 {len(results)} results for: {query}", ""]
-    for i, r in enumerate(results, 1):
-        out.append(f"{i}. {r['title']}")
-        out.append(f"   🔗 {r['url']}")
-        if r.get('snippet'):
-            out.append(f"   {r['snippet']}")
-        out.append("")
-    print(f"🔍 SEARCH: {query} -> {len(results)} results")
-    return jsonify({"status": "ok", "output": "\n".join(out).rstrip()})
-
-
-@app.route('/download', methods=['POST'])
-def download_endpoint():
-    """
-    Download a URL to a local path, streaming with progress.
-    Body: {"url": "...", "path": "/sdcard/...", "overwrite": false}
-    """
-    if web_search is None:
-        return jsonify({"status": "error",
-                        "output": "❌ web_search module load nahi hua"})
-
-    data      = request.json or {}
-    url       = (data.get('url') or '').strip()
-    path      = (data.get('path') or '').strip()
-    overwrite = bool(data.get('overwrite', False))
-
-    if not url:
-        return jsonify({"status": "error", "output": "❌ url missing"})
-    if not path:
-        return jsonify({"status": "error", "output": "❌ path missing"})
-
-    if not os.path.isabs(path):
-        path = os.path.join(get_cwd(), path)
-
-    # Publish a small 'running' flag so the client shows the terminal box
-    with session_lock:
-        if session['running']:
-            return jsonify({"status": "busy",
-                            "output": "⚠️ Ek command already chal rahi hai"})
-        session['running']       = True
-        session['chunks']        = [f'⬇️  Downloading {url}\n', f'📁 → {path}\n']
-        session['done']          = False
-        session['final_output']  = ''
-        session['input_needed']  = False
-        session['input_context'] = ''
-        session['input_value']   = None
-        session['input_event']   = threading.Event()
-        session['pid']            = None
-        session['start_time']     = time.time()
-        session['killed_by_user'] = False
-        session['cancel_event']   = threading.Event()
-
-    cancel_ev = session['cancel_event']
-
-    def _progress(done, total):
-        if total > 0:
-            pct = done * 100 // total
-            line = f'  {done:>10,} / {total:>10,} bytes  ({pct}%)'
-        else:
-            line = f'  {done:>10,} bytes downloaded'
-        with session_lock:
-            session['chunks'].append(line)
-
-    def _worker():
-        try:
-            result = web_search.download(
-                url=url, dest=path, overwrite=overwrite,
-                progress_cb=_progress,
-                cancel_check=cancel_ev.is_set,
-            )
-        except Exception as e:
-            result = {'status': 'error', 'message': f'❌ Exception: {e}'}
-
-        with session_lock:
-            killed = session.get('killed_by_user', False)
-            if killed or result.get('cancelled'):
-                final = result.get('message') or '🛑 User ne Kill button dabaya — download band kar di.'
-            else:
-                final = result.get('message', 'done')
-            session['chunks'].append('\n' + final + '\n')
-            session['final_output'] = final
-            session['done']         = True
-            session['running']      = False
-            session['cancel_event'] = None
-
-    threading.Thread(target=_worker, daemon=True).start()
-    return jsonify({"status": "started"})
 
 
 if __name__ == '__main__':

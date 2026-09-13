@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Termux AI Agent+ (DeepSeek + Claude + ChatGPT)
 // @namespace    termux-agent
-// @version      17.4
+// @version      17.6
 // @updateURL    https://raw.githubusercontent.com/tusharsharmalogic-cmyk/Ai-agent-script/main/script.js
 // @downloadURL  https://raw.githubusercontent.com/tusharsharmalogic-cmyk/Ai-agent-script/main/script.js
 // @match        *://chat.deepseek.com/*
@@ -714,42 +714,6 @@
     function headFile(path, n)          { callEndpoint('/head',   {path, n}); }
     function tailFile(path, n)          { callEndpoint('/tail',   {path, n}); }
     function pdfCreate(spec)            { callEndpoint('/pdf',    spec); }
-    function webSearch(query, num)      { callEndpoint('/search', {query, num}); }
-    // download needs polling (live progress) — like runCommand
-
-
-    // ── Download Command (with polling, same flow as runCommand) ────────────
-    function downloadCommand(url, path, overwrite) {
-        isRunning    = true;
-        inputPending = false;
-        hideTerminalOverlay();
-        if (runTimeout) { clearTimeout(runTimeout); runTimeout = null; }
-
-        GM_xmlhttpRequest({
-            method: 'POST',
-            url: 'http://localhost:5000/download',
-            headers: {'Content-Type': 'application/json'},
-            data: JSON.stringify({url, path, overwrite: !!overwrite}),
-            onload: function(r) {
-                try {
-                    let data = JSON.parse(r.responseText);
-                    if (data.status === 'started') {
-                        startPolling();
-                    } else {
-                        isRunning = false;
-                        sendToAI(data.output || '❌ Error');
-                    }
-                } catch(e) {
-                    isRunning = false;
-                    sendToAI('❌ Download parse error');
-                }
-            },
-            onerror: function() {
-                isRunning = false;
-                sendToAI('❌ Download request failed');
-            }
-        });
-    }
 
     // ── Run Command ───────────────────────────────────────────────────────────
     function runCommand(cmd) {
@@ -995,25 +959,6 @@
                 }
             }
 
-            // WEB_SEARCH: <query> [| num=N]
-            let wsMatch = text.match(/^WEB_SEARCH:\s*(.+?)(?:\s*\|\s*num\s*=\s*(\d+))?\s*$/m);
-            if (wsMatch) {
-                return {type: 'websearch',
-                        query: wsMatch[1].trim(),
-                        num: wsMatch[2] ? parseInt(wsMatch[2], 10) : 10,
-                        fp: text};
-            }
-
-            // DOWNLOAD: <url> -> <path> [| overwrite=true]
-            let dlMatch = text.match(/^DOWNLOAD:\s*(\S+)\s*(?:->|=>|→)\s*(.+?)(?:\s*\|\s*overwrite\s*=\s*(true|false))?\s*$/m);
-            if (dlMatch) {
-                return {type: 'download',
-                        url: dlMatch[1].trim(),
-                        path: dlMatch[2].trim(),
-                        overwrite: dlMatch[3] === 'true',
-                        fp: text};
-            }
-
             let multiMatch = text.match(/^RUN_CMD_START\s*\n([\s\S]*?)\nRUN_CMD_END\s*$/m);
             if (multiMatch) return {type: 'cmd', cmd: multiMatch[1].trim(), fp: text};
 
@@ -1131,10 +1076,8 @@
         if (action.type === 'head')   headFile(action.path, action.n);
         if (action.type === 'tail')   tailFile(action.path, action.n);
         if (action.type === 'pdf')    pdfCreate(action.spec);
-        if (action.type === 'websearch') webSearch(action.query, action.num);
-        if (action.type === 'download')  downloadCommand(action.url, action.path, action.overwrite);
     }, 600);
 
-    console.log(`✅ Termux Agent v17.4 loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
+    console.log(`✅ Termux Agent v17.6 loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
 
 })();
