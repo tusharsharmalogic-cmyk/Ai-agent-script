@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Termux AI Agent+ (DeepSeek + Claude + ChatGPT)
 // @namespace    termux-agent
-// @version      17.6
+// @version      17.7
 // @updateURL    https://raw.githubusercontent.com/tusharsharmalogic-cmyk/Ai-agent-script/main/script.js
 // @downloadURL  https://raw.githubusercontent.com/tusharsharmalogic-cmyk/Ai-agent-script/main/script.js
 // @match        *://chat.deepseek.com/*
@@ -145,7 +145,8 @@
         function cancelInput() {
             overlay.remove();
             inputPending = false;
-            sendInputToServer('');  // empty → server side timeout handle karega
+            // BUG FIX: empty string nahi — process ko kill karo
+            killRunningCommand();
         }
 
         sendBtn.onclick = submitInput;
@@ -312,6 +313,10 @@
     }
 
     function killRunningCommand() {
+        // BUG FIX: input overlay bhi hata do — Kill ke baad stuck nahi rahega
+        let inpOv = document.getElementById(OVERLAY_ID);
+        if (inpOv) { inpOv.remove(); inputPending = false; }
+
         GM_xmlhttpRequest({
             method: 'POST',
             url: 'http://localhost:5000/kill',
@@ -319,9 +324,14 @@
             data: '{}',
             onload: function(r) {
                 console.log('🛑 Kill response:', r.responseText);
+                // BUG FIX: isRunning ko false mark karo agar poll loop stuck ho
+                // (poll done response se bhi hoga, yeh safety net hai)
             },
             onerror: function() {
                 console.error('❌ Kill request failed');
+                // BUG FIX: server unreachable ho toh isRunning reset karo
+                isRunning = false;
+                hideTerminalOverlay();
             }
         });
     }
@@ -1078,6 +1088,6 @@
         if (action.type === 'pdf')    pdfCreate(action.spec);
     }, 600);
 
-    console.log(`✅ Termux Agent v17.6 loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
+    console.log(`✅ Termux Agent v17.7 loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
 
 })();

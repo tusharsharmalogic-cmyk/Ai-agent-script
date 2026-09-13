@@ -366,10 +366,14 @@ def poll():
 @app.route('/input', methods=['POST'])
 def send_input():
     data = request.json
-    session['input_value'] = data.get('value', '')
-    session['input_needed'] = False
-    session['input_event'].set()
-    print(f"✏️ Input received: {session['input_value']}")
+    val = data.get('value', '')
+    # BUG FIX: session_lock ke andar update karo — thread-safe
+    with session_lock:
+        session['input_value']  = val
+        session['input_needed'] = False
+        ev = session['input_event']
+    ev.set()
+    print(f"✏️ Input received: {val!r}")
     return jsonify({"status": "ok"})
 
 @app.route('/kill', methods=['POST'])
