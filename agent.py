@@ -1026,6 +1026,22 @@ def generate_pdf():
         return jsonify({"status": "error", "output": out})
 
 
+@app.route('/script', methods=['GET'])
+def serve_script():
+    """Latest local script.js serve karo — Tampermonkey @updateURL ke liye."""
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'script.js')
+    if not os.path.exists(script_path):
+        return "// script.js not found", 404, {'Content-Type': 'application/javascript'}
+    try:
+        content = open(script_path, 'r', encoding='utf-8').read()
+        return content, 200, {
+            'Content-Type': 'application/javascript; charset=utf-8',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+        }
+    except Exception as e:
+        return f"// Error: {e}", 500, {'Content-Type': 'application/javascript'}
+
 if __name__ == '__main__':
     print("╔══════════════════════════════════════════╗")
     print("║     🤖  Termux AI Agent Server           ║")
