@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Termux AI Agent+ (DeepSeek + Claude + ChatGPT)
 // @namespace    termux-agent
-// @version      17.7
+// @version      17.8
 // @updateURL    https://raw.githubusercontent.com/tusharsharmalogic-cmyk/Ai-agent-script/main/script.js
 // @downloadURL  https://raw.githubusercontent.com/tusharsharmalogic-cmyk/Ai-agent-script/main/script.js
 // @match        *://chat.deepseek.com/*
@@ -277,6 +277,16 @@
 
         termOverlay = ov;
         termShownAt = Date.now();
+
+        // BUG FIX: timer chunks pe dependent tha — ab dedicated interval se update hoga
+        let timerInterval = setInterval(() => {
+            if (!termOverlay) { clearInterval(timerInterval); return; }
+            let t = document.getElementById(TERM_ID + '-timer');
+            if (t) {
+                let sec = Math.floor((Date.now() - termShownAt) / 1000);
+                t.textContent = sec + 's';
+            }
+        }, 1000);
     }
 
     function updateTerminalOverlay(chunks) {
@@ -298,11 +308,6 @@
         pre.textContent = lastTermChunk;
         pre.scrollTop = pre.scrollHeight;
 
-        let t = document.getElementById(TERM_ID + '-timer');
-        if (t) {
-            let sec = Math.floor((Date.now() - termShownAt) / 1000);
-            t.textContent = sec + 's';
-        }
     }
 
     function hideTerminalOverlay() {
@@ -1088,6 +1093,6 @@
         if (action.type === 'pdf')    pdfCreate(action.spec);
     }, 600);
 
-    console.log(`✅ Termux Agent v17.7 loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
+    console.log(`✅ Termux Agent v17.8 loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
 
 })();
