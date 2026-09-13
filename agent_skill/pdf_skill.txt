@@ -1,0 +1,172 @@
+╔══════════════════════════════════════════════════════════════════╗
+║  PDF SKILL — How to generate PDFs in this agent loop             ║
+║  Trigger: user asks for a PDF / report / document / printout     ║
+╚══════════════════════════════════════════════════════════════════╝
+
+STEP 1 — Read this file first (if you're reading it, you already did).
+
+STEP 2 — Use the PDF_CREATE action. It is a special parser action —
+         NOT a shell command. Do NOT use RUN_CMD with python here.
+
+STEP 3 — Output EXACTLY one fenced code block, no prose:
+
+┌──────────────────────────────────────────────────────────────────┐
+│ PDF_CREATE: /absolute/path/to/output.pdf                          │
+│ <<<                                                               │
+│ {                                                                 │
+│   "title":     "Document Title",                                  │
+│   "subtitle":  "optional subtitle",                               │
+│   "header":    "optional header on every page",                   │
+│   "footer":    "optional footer",                                 │
+│   "show_page_numbers": true,                                      │
+│   "overwrite": false,                                             │
+│   "author":    "AI Agent",                                        │
+│   "subject":   "report",                                          │
+│   "content":   [ ...content blocks... ]                           │
+│ }                                                                 │
+│ >>>                                                               │
+└──────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════
+ CONTENT BLOCK TYPES (each is a dict inside "content" array)
+═══════════════════════════════════════════════════════════════════
+
+  {"type": "title",      "text": "Big centered title"}
+  {"type": "subtitle",   "text": "Centered subtitle"}
+  {"type": "heading",    "text": "Section heading (with underline)"}
+  {"type": "subheading", "text": "Sub-section heading"}
+  {"type": "paragraph",  "text": "Body text, justified."}
+  {"type": "bold",       "text": "Bold paragraph"}
+  {"type": "italic",     "text": "Italic paragraph"}
+
+  {"type": "bullet",     "items": ["First", "Second", "Third"]}
+  {"type": "numbered",   "items": ["Step 1", "Step 2", "Step 3"]}
+
+  {"type": "table",
+   "headers": ["Col A", "Col B"],
+   "rows":    [["a1", "b1"], ["a2", "b2"]]}
+
+  {"type": "image",
+   "path":    "/sdcard/photo.jpg",
+   "caption": "optional caption",
+   "width":   400,
+   "height":  300}
+
+  {"type": "code",       "text": "line1\nline2\nline3"}
+
+  {"type": "hr"}                            # horizontal rule
+  {"type": "spacer",     "height": 20}      # vertical gap (points)
+  {"type": "pagebreak"}                     # force new page
+
+═══════════════════════════════════════════════════════════════════
+ RULES
+═══════════════════════════════════════════════════════════════════
+
+1. Output ONLY the PDF_CREATE block. No prose before or after.
+2. The JSON must be VALID:
+   - double quotes only
+   - no trailing commas
+   - no comments
+   - escape \n as \\n inside strings
+3. Everything between <<< and >>> is the JSON spec.
+4. "path" goes on the PDF_CREATE line itself, not inside JSON.
+5. If the user says "overwrite" or the file might exist, set
+   "overwrite": true. Default is false (safer).
+6. Content list may be empty IF title/subtitle is provided.
+7. After the block runs, you'll receive:
+     ✅ PDF created: /path/file.pdf (NNNN bytes)
+   or
+     ❌ PDF failed: <reason>
+8. If it failed with "File already exists", retry with overwrite=true.
+9. Don't try to run python directly with RUN_CMD for PDF generation.
+   The PDF_CREATE action is the ONLY supported way.
+
+═══════════════════════════════════════════════════════════════════
+ EXAMPLES
+═══════════════════════════════════════════════════════════════════
+
+── Example 1: Simple report ──────────────────────────────────────
+
+  PDF_CREATE: /sdcard/report.pdf
+  <<<
+  {
+    "title": "Daily Report",
+    "overwrite": true,
+    "content": [
+      {"type": "heading",   "text": "Summary"},
+      {"type": "paragraph", "text": "All systems operational."},
+      {"type": "bullet",    "items": ["Server up", "Backup done"]}
+    ]
+  }
+  >>>
+
+── Example 2: With table and header/footer ──────────────────────
+
+  PDF_CREATE: /sdcard/files_report.pdf
+  <<<
+  {
+    "title": "Files Report",
+    "header": "Termux AI Agent",
+    "footer": "Generated automatically",
+    "show_page_numbers": true,
+    "overwrite": true,
+    "content": [
+      {"type": "heading", "text": "File List"},
+      {"type": "table",
+       "headers": ["Name", "Size", "Type"],
+       "rows": [
+         ["a.py", "2 KB", "python"],
+         ["b.pdf", "10 KB", "pdf"]
+       ]},
+      {"type": "hr"},
+      {"type": "paragraph", "text": "End of report."}
+    ]
+  }
+  >>>
+
+── Example 3: Multi-page doc ─────────────────────────────────────
+
+  PDF_CREATE: /sdcard/booklet.pdf
+  <<<
+  {
+    "title": "Booklet",
+    "overwrite": true,
+    "content": [
+      {"type": "heading",   "text": "Chapter 1"},
+      {"type": "paragraph", "text": "Content of chapter 1..."},
+      {"type": "pagebreak"},
+      {"type": "heading",   "text": "Chapter 2"},
+      {"type": "paragraph", "text": "Content of chapter 2..."}
+    ]
+  }
+  >>>
+
+═══════════════════════════════════════════════════════════════════
+ HOW IT WORKS (behind the scenes — for your understanding)
+═══════════════════════════════════════════════════════════════════
+
+  Your PDF_CREATE block
+        ↓
+  script.js (userscript) parses it
+        ↓
+  POST /pdf  →  agent.py endpoint
+        ↓
+  create_pdf() in pdf_engine.py (ReportLab)
+        ↓
+  PDF file written to disk
+        ↓
+  You receive: "✅ PDF created: /path (NNN bytes)"
+
+═══════════════════════════════════════════════════════════════════
+ QUICK CHECKLIST BEFORE OUTPUTTING A PDF_CREATE BLOCK
+═══════════════════════════════════════════════════════════════════
+
+  [ ] Path is absolute (starts with /)
+  [ ] Path ends with .pdf (or it will be auto-appended)
+  [ ] JSON has no trailing commas
+  [ ] JSON strings use double quotes
+  [ ] Content is non-empty OR title/subtitle exists
+  [ ] Only ONE code block in the response
+  [ ] No prose around the block
+
+That's it. Now go make PDFs. 📄

@@ -548,6 +548,7 @@
     function grepFile(pattern, path)    { callEndpoint('/grep',   {pattern, path}); }
     function headFile(path, n)          { callEndpoint('/head',   {path, n}); }
     function tailFile(path, n)          { callEndpoint('/tail',   {path, n}); }
+    function pdfCreate(spec)            { callEndpoint('/pdf',    spec); }
 
     // ── Run Command ───────────────────────────────────────────────────────────
     function runCommand(cmd) {
@@ -778,6 +779,18 @@
                 return {type: 'write', path: writeMatch[1].trim(), content: writeMatch[2], fp: text};
             }
 
+            let pdfMatch = text.match(/^PDF_CREATE:\s*(.+?)\n<{1,3}\n([\s\S]*?)\n>{1,3}\s*(?:$|\n)/);
+            if (pdfMatch) {
+                try {
+                    let spec = JSON.parse(pdfMatch[2]);
+                    spec.path = pdfMatch[1].trim();
+                    return {type: 'pdf', spec: spec, fp: text};
+                } catch(e) {
+                    console.error('❌ PDF_CREATE JSON parse error:', e);
+                    return null;
+                }
+            }
+
             let multiMatch = text.match(/^RUN_CMD_START\s*\n([\s\S]*?)\nRUN_CMD_END\s*$/m);
             if (multiMatch) return {type: 'cmd', cmd: multiMatch[1].trim(), fp: text};
 
@@ -894,6 +907,7 @@
         if (action.type === 'grep')   grepFile(action.pattern, action.path);
         if (action.type === 'head')   headFile(action.path, action.n);
         if (action.type === 'tail')   tailFile(action.path, action.n);
+        if (action.type === 'pdf')    pdfCreate(action.spec);
     }, 600);
 
     console.log(`✅ Termux Agent v17.0 loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);

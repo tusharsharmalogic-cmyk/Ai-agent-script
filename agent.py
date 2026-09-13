@@ -844,6 +844,121 @@ def tail_file():
         return jsonify({"status": "error", "output": f"❌ Tail error: {e}"})
 
 
+@app.route('/pdf', methods=['POST'])
+def generate_pdf():
+    """
+    Structured content se PDF banao — pdf_engine.py use karta hai.
+
+    Body (JSON):
+      {
+        "path": "/sdcard/report.pdf",
+        "title": "...", "subtitle": "...",
+        "header": "...", "footer": "...",
+        "show_page_numbers": true,
+        "overwrite": true,
+        "author": "...", "subject": "...",
+        "content": [ {"type":"heading","text":"..."}, ... ]
+      }
+    """
+    data = request.json or {}
+
+    path = data.get('path', '').strip()
+    if not path:
+        return jsonify({"status": "error", "output": "❌ path missing"})
+
+    # Relative path → CWD se resolve
+    if not os.path.isabs(path):
+        path = os.path.join(get_cwd(), path)
+
+    # pdf_engine ko robustly import karo — sys.path + importlib fallback
+    import sys, importlib, importlib.util
+
+    # Try 1: normal import (agar sys.path mein pehle se hai)
+    create_pdf = None
+    try:
+        from pdf_engine import create_pdf
+    except ImportError:
+        pass
+
+    # Try 2: script dir + cwd sys.path mein daalo
+    if create_pdf is None:
+        candidates = [
+            os.path.dirname(os.path.abspath(__file__)),
+            '/sdcard/Ai-agent-script',
+            get_cwd(),
+        ]
+        for d in candidates:
+            if d and d not in sys.path:
+                sys.path.insert(0, d)
+        try:
+            from pdf_engine import create_pdf
+        except ImportError:
+            pass
+
+    # Try 3: importlib direct file load — koi sys.path dependency nahi
+    if create_pdf is None:
+        for d in candidates:
+            fpath = os.path.join(d, 'pdf_engine.py')
+            if os.path.exists(fpath):
+                try:
+                    spec = importlib.util.spec_from_file_location('pdf_engine', fpath)
+                    mod  = importlib.util.module_from_spec(spec)
+                    sys.modules['pdf_engine'] = mod
+                    spec.loader.exec_module(mod)
+                    create_pdf = mod.create_pdf
+                    print(f"📦 pdf_engine loaded via importlib from {fpath}")
+                    break
+                except Exception as e:
+                    print(f"⚠️ importlib load fail ({fpath}): {e}")
+
+    if create_pdf is None:
+        return jsonify({
+            "status": "error",
+            "output": "❌ pdf_engine import fail — file /sdcard/Ai-agent-script/pdf_engine.py check karo"
+        })
+
+    content = data.get('content') or []
+    if not isinstance(content, list):
+        return jsonify({"status": "error", "output": "❌ 'content' must be a list of dicts"})
+
+    # Agar content empty hai aur title/subtitle bhi nahi — reject
+    if not content and not data.get('title') and not data.get('subtitle'):
+        return jsonify({"status": "error", "output": "❌ PDF ke liye 'content' ya 'title'/'subtitle' chahiye"})
+
+    try:
+        result = create_pdf(
+            output=path,
+            content=content,
+            title=data.get('title'),
+            subtitle=data.get('subtitle'),
+            header=data.get('header'),
+            footer=data.get('footer'),
+            show_page_numbers=bool(data.get('show_page_numbers', True)),
+            overwrite=bool(data.get('overwrite', False)),
+            author=data.get('author'),
+            subject=data.get('subject'),
+        )
+    except Exception as e:
+        return jsonify({"status": "error", "output": f"❌ PDF engine exception: {e}"})
+
+    if result.get('status') == 'ok':
+        size   = result.get('size', 0)
+        warns  = result.get('warnings') or []
+        out    = f"✅ PDF created: {result.get('path')} ({size} bytes)"
+        if warns:
+            out += "\n⚠️ Warnings:\n  - " + "\n  - ".join(warns)
+        print(f"📕 PDF: {result.get('path')} ({size}B, {len(warns)} warnings)")
+        return jsonify({"status": "ok", "output": out})
+    else:
+        msg = result.get('message', 'unknown error')
+        tb  = result.get('traceback', '')
+        out = f"❌ PDF failed: {msg}"
+        if tb:
+            out += f"\n\n{tb}"
+        print(f"❌ PDF failed: {msg}")
+        return jsonify({"status": "error", "output": out})
+
+
 if __name__ == '__main__':
     print("╔══════════════════════════════════════════╗")
     print("║     🤖  Termux AI Agent Server           ║")
