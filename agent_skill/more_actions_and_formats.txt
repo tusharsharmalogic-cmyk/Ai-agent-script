@@ -1,0 +1,103 @@
+╔══════════════════════════════════════════════════════════════════╗
+║  EXTRA ACTIONS & FORMATS — Termux AI Agent                        ║
+║  (Ye file sirf NAYE actions ke liye hai)                          ║
+║                                                                    ║
+║  Isme:  WEB_SEARCH  +  DOWNLOAD                                    ║
+║                                                                    ║
+║  Baaki purane actions (READ_FILE, WRITE_FILE, EDIT_FILE,          ║
+║  RUN_CMD, PDF_CREATE, etc.) system_prompt me documented hain.     ║
+╚══════════════════════════════════════════════════════════════════╝
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 1) WEB_SEARCH — internet pe search karo (Google jaise)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Kya karta hai:
+  DuckDuckGo (Google ka privacy-focused alternative) se search
+  karke results (title + URL + snippet) laata hai.
+  Koi API key nahi chahiye.
+
+FORMAT:
+
+    WEB_SEARCH: <query>
+
+    WEB_SEARCH: <query> | num=15
+
+  - Default num = 10 (max 25 tak useful)
+  - Sirf 1 fenced code block, aur koi prose nahi
+
+EXAMPLE 1 — simple
+    WEB_SEARCH: termux tutorial hindi
+
+EXAMPLE 2 — zyada results
+    WEB_SEARCH: best android terminal apps 2024 | num=15
+
+RESULT kaisa milega:
+    🔍 5 results for: termux tutorial hindi
+
+    1. Title of page
+       🔗 https://full-url-here
+       Short snippet describing the page ...
+
+    2. ... (next result)
+    ...
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 2) DOWNLOAD — internet se file download karo
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Kya karta hai:
+  Kisi bhi URL se file (image, pdf, zip, mp3, etc.) directly
+  download karta hai, live progress ke saath.
+  Progress terminal box me streaming dikhegi (bytes/total/percent).
+
+FORMAT:
+
+    DOWNLOAD: <url> -> <absolute_path>
+
+    DOWNLOAD: <url> -> <absolute_path> | overwrite=true
+
+  - Path MUST absolute ho (/sdcard/... ya /data/data/com.termux/...)
+  - Agar file pehle se hai aur overwrite=true nahi diya -> error
+  - User kabhi bhi Kill kar sakta hai
+
+EXAMPLE 1 — naya download
+    DOWNLOAD: https://example.com/image.jpg -> /sdcard/Download/image.jpg
+
+EXAMPLE 2 — overwrite karo
+    DOWNLOAD: https://example.com/report.pdf -> /sdcard/report.pdf | overwrite=true
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ FULL WORKFLOW — "search karke download karo"
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+User: "mujhe python cheatsheet pdf chahiye"
+
+Step 1 — SEARCH:
+    WEB_SEARCH: python cheatsheet pdf
+
+Step 2 — Results padho, best URL chuno
+    (output me titles aur URLs milenge)
+
+Step 3 — DOWNLOAD:
+    DOWNLOAD: https://best-site.com/cheatsheet.pdf -> /sdcard/Download/cheatsheet.pdf
+
+Step 4 — VERIFY:
+    FILE_INFO: /sdcard/Download/cheatsheet.pdf
+
+Bas! Ek-ek action, ek-ek response me.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1. Ek response me SIRF ek action. Do combine mat karo.
+  2. Sirf ek fenced code block, koi prose around nahi.
+  3. Paths absolute (/sdcard/... ya /data/...).
+  4. Kabhi mat bolo "ho gaya" jab tak result na aaye.
+  5. WEB_SEARCH ko RUN_CMD me wrap mat karo — ye parser action hai.
+  6. DOWNLOAD bhi parser action hai, RUN_CMD nahi.
+  7. File exist karti hai aur overwrite nahi diya -> error aayega,
+     phir retry karo overwrite=true ke saath.
+  8. Search ke baad seedha download mat karo — pehle user ko
+     results dikhao (ya khud choose karo agar clear ho).
