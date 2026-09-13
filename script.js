@@ -1,7 +1,9 @@
 // ==UserScript==
 // @name         Termux AI Agent+ (DeepSeek + Claude + ChatGPT)
 // @namespace    termux-agent
-// @version      17.2
+// @version      17.3
+// @updateURL    https://raw.githubusercontent.com/tusharsharmalogic-cmyk/Ai-agent-script/main/script.js
+// @downloadURL  https://raw.githubusercontent.com/tusharsharmalogic-cmyk/Ai-agent-script/main/script.js
 // @match        *://chat.deepseek.com/*
 // @match        *://claude.ai/*
 // @match        *://gemini.google.com/*
@@ -1076,6 +1078,6 @@
         if (action.type === 'pdf')    pdfCreate(action.spec);
     }, 600);
 
-    console.log(`✅ Termux Agent v17.2 loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
+    console.log(`✅ Termux Agent v17.3 loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
 
 })();
