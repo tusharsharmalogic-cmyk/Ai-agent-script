@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Termux AI Agent+ (DeepSeek + Claude + ChatGPT)
 // @namespace    termux-agent
-// @version      17.1
+// @version      17.2
 // @match        *://chat.deepseek.com/*
 // @match        *://claude.ai/*
 // @match        *://gemini.google.com/*
@@ -277,18 +277,21 @@
     }
 
     function updateTerminalOverlay(chunks) {
-        if (!termOverlay) return;
-        let pre = document.getElementById(TERM_ID + '-out');
-        if (!pre) return;
+        // Always accumulate chunks — even before the overlay box opens.
+        // (Otherwise pre-10s output is lost and the box looks empty.)
         for (let c of chunks) {
             lastTermChunk += c;
         }
-        // Keep last ~200 lines for perf
+        // Keep last ~400 lines for perf
         let lines = lastTermChunk.split('\n');
-        if (lines.length > 200) {
-            lines = lines.slice(lines.length - 200);
+        if (lines.length > 400) {
+            lines = lines.slice(lines.length - 400);
             lastTermChunk = lines.join('\n');
         }
+        // If overlay not open yet, we're done — chunks are buffered.
+        if (!termOverlay) return;
+        let pre = document.getElementById(TERM_ID + '-out');
+        if (!pre) return;
         pre.textContent = lastTermChunk;
         pre.scrollTop = pre.scrollHeight;
 
@@ -358,6 +361,9 @@
                             inputPending  = false;
                             if (runTimeout) { clearTimeout(runTimeout); runTimeout = null; }
                             hideTerminalOverlay();
+                            // Input overlay bhi hata do agar khula hua hai
+                            let inpOv = document.getElementById(OVERLAY_ID);
+                            if (inpOv) inpOv.remove();
                             sendToAI(data.final_output);
                         }
                     } catch(e) {
@@ -1070,6 +1076,6 @@
         if (action.type === 'pdf')    pdfCreate(action.spec);
     }, 600);
 
-    console.log(`✅ Termux Agent v17.1 loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
+    console.log(`✅ Termux Agent v17.2 loaded on ${IS_CLAUDE ? 'Claude.ai' : IS_GEMINI ? 'Gemini' : IS_CHATGPT ? 'ChatGPT' : 'DeepSeek'}`);
 
 })();

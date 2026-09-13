@@ -63,6 +63,7 @@ def strip_ansi(text):
         r'\x1b[()][AB012]',                     # charset select
         r'\x1b[=>78]',                          # keypad / save-restore
         r'\x1b[@-Z\\-_]',                       # single-char ESC seqs
+        r'\\033\[[0-9;]*[a-zA-Z]',             # literal \033[0m etc (echo -e fallback)
         r'\x07',                                # BEL
         r'\r',                                  # CR (progress bars overwrite)
     ]
@@ -189,13 +190,15 @@ def run_cmd_thread(raw_cmd):
             bool(re.search(r'continue\s*\?',           lower)) or
             bool(re.search(r'proceed\s*\?',            lower)) or
             bool(re.search(r'\[yes[/\\]no\]',        lower)) or
-            bool(re.search(r'overwrite\s*\?',          lower))
+            bool(re.search(r'overwrite\s*\?',          lower)) or
+            bool(re.search(r'choice\s*\([0-9\-/a-z]+\)\s*:?\s*$', lower)) or
+            bool(re.search(r'(select|enter|choose|input|chuno|daalo)[^\n]{0,40}:\s*$', lower))
         )
 
         # Layer 2: Generic — colon/? se end hone wala short line
         # 400ms silence check — confirm karo process block hai
         generic_prompt = is_short_line and not known_prompt and (
-            bool(re.search(r'[\w\s]{2,}[\?\:]\s*$', stripped))
+            bool(re.search(r'[:\?]\s*$', stripped))
         )
 
         needs_input = known_prompt or generic_prompt
